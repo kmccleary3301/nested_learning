@@ -1,0 +1,8 @@
+{
+  "piqa_accuracy": 0.5,
+  "piqa_samples": 16,
+  "hellaswag_accuracy": 0.0,
+  "hellaswag_samples": 16,
+  "winogrande_accuracy": 0.625,
+  "winogrande_samples": 16
+}

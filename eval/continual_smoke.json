@@ -1,0 +1,43 @@
+{
+  "checkpoints": [
+    "artifacts/checkpoints/pilot_smoke/step_000010.pt"
+  ],
+  "segments": [
+    {
+      "name": "refinedweb_segment",
+      "shards_dir": "data/shards/refinedweb_filtered",
+      "max_batches": 10
+    },
+    {
+      "name": "wikipedia_segment",
+      "shards_dir": "data/shards/wikipedia_filtered",
+      "max_batches": 10
+    },
+    {
+      "name": "redpajama_segment",
+      "shards_dir": "data/shards/redpajama_filtered",
+      "max_batches": 10
+    }
+  ],
+  "metrics": {
+    "step_000010": {
+      "refinedweb_segment": {
+        "loss": 10.532247871055528,
+        "ppl": 37505.687647419305
+      },
+      "wikipedia_segment": {
+        "loss": 10.51791113090142,
+        "ppl": 36971.81449407471
+      },
+      "redpajama_segment": {
+        "loss": 10.54121800850049,
+        "ppl": 37843.63225938314
+      }
+    }
+  },
+  "forgetting": {
+    "refinedweb_segment": 0.0,
+    "wikipedia_segment": 0.0,
+    "redpajama_segment": 0.0
+  }
+}

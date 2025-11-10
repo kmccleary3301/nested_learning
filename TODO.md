@@ -1,0 +1,31 @@
+# Project TODOs
+
+## Stage 2 – Results Reproduction
+- [ ] **Data Engineering**
+  - [ ] Acquire RefinedWeb + supplement corpora under `data/raw/`.
+  - [x] Implement filtering/dedup scripts (language ID, length bounds).
+  - [x] Run `scripts/data/train_tokenizer.py` on combined corpus and store tokenizer artifacts.
+  - [x] Shard each corpus component with `scripts/data/process_mixture.py`; log mixture stats.
+  - [x] Automate `sample` and `full` pipelines via `scripts/data/run_sample.sh` / `scripts/data/run_full.sh`.
+- [ ] **Infrastructure & Configs**
+  - [x] Build Hydra config tree (`configs/hope/`) for pilot/mid/target, including optimizer + level schedules.
+  - [x] Integrate logging (W&B/MLflow) hooks into training loop and configs.
+  - [x] Provide DeepSpeed + FSDP launcher scripts with resume support.
+  - [x] Add CI workflow (`.github/workflows/ci.yml`) for lint/type/tests via `uv`.
+- [ ] **Scaling Training**
+  - [ ] Run pilot (160 M, 3 B tokens) to validate pipeline + self-mod updates. *(CPU/GPU smoke done; full pilot run pending)*
+  - [ ] Scale to 760 M / 30 B tokens; capture checkpoints + metrics. *(100-step mid run stable; longer runs waiting on teach-scale tuning + compute.)*
+  - [ ] Execute 1.3 B / 100 B training with long-context curriculum.
+- [ ] **Evaluation Harness**
+  - [x] Implement `scripts/eval/zeroshot.py` scaffolding (PIQA baseline).
+  - [x] Build NIAH long-context scaffolding script (`scripts/eval/niah.py`).
+  - [x] Add continual-learning scripts measuring forgetting over streaming domains.
+  - [ ] Capture Stage 2 eval packs (zeroshot/NIAH/continual) from mid-scale checkpoints once stable.
+- [ ] **Ablations & Analysis**
+  - [ ] Run self-modifier off/on comparison at pilot scale.
+  - [ ] Test CMS depth variations and optimizer variants.
+  - [ ] Compare attention backbones (full vs. sliding vs. DeltaNet).
+- [ ] **Documentation & Release**
+  - [ ] Maintain experiment logs under `reports/`.
+  - [ ] Publish data pipeline instructions + provenance for each corpus.
+  - [ ] Summarize final metrics vs. baselines in Stage 2 report.

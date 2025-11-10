@@ -1,0 +1,71 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  vocab_size: 32000
+  dim: 256
+  num_layers: 4
+  heads: 4
+  titan_level:
+    name: titan
+    update_period: 8
+    optimizer_key: titan_opt
+  cms_levels:
+    - name: cms_fast
+      update_period: 1
+      optimizer_key: cms_opt
+    - name: cms_mid
+      update_period: 4
+      optimizer_key: cms_opt
+    - name: cms_slow
+      update_period: 16
+      optimizer_key: cms_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 1.0e-3
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_opt:
+      type: deep_momentum
+      lr: 5.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+
+data:
+  source: synthetic
+  vocab_size: 32000
+  seq_len: 128
+  dataset_size: 4096
+  batch_size: 8
+  num_workers: 0
+
+train:
+  steps: 20
+  log_interval: 1
+  device: "cuda:1"
+  checkpoint:
+    enable: false
+    dir: checkpoints/pilot
+    save_interval: 50
+    resume_path: null
+    resume_tag: null
+
+optim:
+  lr: 3.0e-4
+
+logging:
+  enabled: false
+  backend: wandb
+  project: nested-learning
+  run_name: pilot-${now:%Y%m%d%H%M%S}
+  path: logs/pilot_metrics.json

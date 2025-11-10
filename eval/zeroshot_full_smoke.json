@@ -1,0 +1,16 @@
+{
+  "piqa_accuracy": 0.625,
+  "piqa_samples": 32,
+  "hellaswag_accuracy": 0.0,
+  "hellaswag_samples": 32,
+  "winogrande_accuracy": 0.46875,
+  "winogrande_samples": 32,
+  "arc_arc-easy_accuracy": 0.21875,
+  "arc_arc-easy_samples": 32,
+  "arc_arc-challenge_accuracy": 0.28125,
+  "arc_arc-challenge_samples": 32,
+  "boolq_accuracy": 0.84375,
+  "boolq_samples": 32,
+  "siqa_accuracy": 0.25,
+  "siqa_samples": 32
+}

@@ -1,0 +1,93 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  vocab_size: 32000
+  dim: 1024
+  num_layers: 24
+  heads: 16
+  titan_level:
+    name: titan
+    update_period: 16
+    optimizer_key: titan_opt
+  cms_levels:
+    - name: cms_fast
+      update_period: 1
+      optimizer_key: cms_opt
+    - name: cms_mid
+      update_period: 4
+      optimizer_key: cms_opt
+    - name: cms_slow
+      update_period: 32
+      optimizer_key: cms_opt
+    - name: cms_ultra
+      update_period: 128
+      optimizer_key: cms_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 8.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_opt:
+      type: deep_momentum
+      lr: 4.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+
+data:
+  source: mixture
+  batch_size: 16
+  num_workers: 4
+  mixture:
+    samples_per_epoch: 8192
+    seed: 42
+    sources:
+      - name: refinedweb
+        shards_dir: data/shards/refinedweb_full
+        weight: 0.4
+      - name: wikipedia
+        shards_dir: data/shards/wikipedia_full
+        weight: 0.2
+      - name: c4
+        shards_dir: data/shards/c4_full
+        weight: 0.15
+      - name: redpajama
+        shards_dir: data/shards/redpajama_full
+        weight: 0.15
+      - name: code
+        shards_dir: data/shards/code_full
+        weight: 0.1
+
+train:
+  steps: 100
+  log_interval: 10
+  device: "cuda:1"
+  fsdp:
+    auto_wrap_min_params: 2000000
+    cpu_offload: false
+  checkpoint:
+    enable: true
+    dir: checkpoints/mid
+    save_interval: 50
+    resume_path: null
+    resume_tag: null
+
+optim:
+  lr: 2.0e-4
+
+logging:
+  enabled: false
+  backend: wandb
+  project: nested-learning
+  run_name: mid-${now:%Y%m%d%H%M%S}
+  path: logs/mid_metrics.json

@@ -1,0 +1,64 @@
+[project]
+name = "nested-learning"
+version = "0.1.0"
+description = "Reproduction of Google's Nested Learning (HOPE) architecture"
+license = {text = "MIT"}
+authors = [
+  {name = "Nested Learning Team", email = "nested-learning@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "torch==2.9.0",
+  "torchvision==0.24.0",
+  "torchaudio==2.9.0",
+  "einops>=0.7.0",
+  "numpy>=1.26",
+  "hydra-core>=1.3.2",
+  "omegaconf>=2.3.0",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+  "typing-extensions>=4.9",
+  "datasets>=2.19,<3.0",
+  "sentencepiece>=0.2.0",
+  "huggingface-hub>=0.23,<1.0",
+  "zstandard>=0.22.0",
+  "wandb>=0.18.0",
+  "langdetect>=1.0.9",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "ruff>=0.6.8",
+  "mypy>=1.11",
+  "types-PyYAML",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = []
+
+[tool.mypy]
+python_version = 3.12
+warn_unused_configs = true
+warn_return_any = true
+strict_optional = true
+show_error_codes = true
+pretty = true
+packages = ["nested_learning"]

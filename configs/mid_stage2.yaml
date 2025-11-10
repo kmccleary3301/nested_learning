@@ -1,0 +1,94 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  vocab_size: 32000
+  dim: 768
+  num_layers: 18
+  heads: 12
+  teach_scale: 0.05
+  teach_clip: 5.0
+  teach_schedule:
+    warmup_steps: 20
+    decay_start: 80
+    decay_duration: 40
+  titan_level:
+    name: titan
+    update_period: 16
+    optimizer_key: titan_opt
+  cms_levels:
+    - name: cms_fast
+      update_period: 1
+      optimizer_key: cms_opt
+    - name: cms_mid
+      update_period: 4
+      optimizer_key: cms_opt
+    - name: cms_slow
+      update_period: 32
+      optimizer_key: cms_opt
+    - name: cms_ultra
+      update_period: 128
+      optimizer_key: cms_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 8.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_opt:
+      type: deep_momentum
+      lr: 4.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+
+data:
+  source: mixture
+  batch_size: 8
+  num_workers: 2
+  mixture:
+    samples_per_epoch: 1024
+    seed: 42
+    sources:
+      - name: refinedweb
+        shards_dir: data/shards/refinedweb_full
+        weight: 0.4
+      - name: wikipedia
+        shards_dir: data/shards/wikipedia_full
+        weight: 0.2
+      - name: c4
+        shards_dir: data/shards/c4_full
+        weight: 0.15
+      - name: redpajama
+        shards_dir: data/shards/redpajama_full
+        weight: 0.15
+      - name: code
+        shards_dir: data/shards/code_full
+        weight: 0.1
+
+train:
+  steps: 100
+  log_interval: 10
+  device: "cuda"
+  fsdp:
+    auto_wrap_min_params: 2000000
+    cpu_offload: false
+  checkpoint:
+    enable: true
+    dir: artifacts/checkpoints/mid_stage2
+    save_interval: 100
+    resume_path: null
+    resume_tag: null
+
+optim:
+  lr: 3.0e-5
+
+logging:
+  enabled: true
+  backend: json
+  path: logs/mid_stage2.json

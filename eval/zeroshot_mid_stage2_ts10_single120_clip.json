@@ -1,0 +1,6 @@
+{
+  "piqa_accuracy": 0.59375,
+  "piqa_samples": 32,
+  "winogrande_accuracy": 0.40625,
+  "winogrande_samples": 32
+}

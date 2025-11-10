@@ -1,0 +1,73 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  type: titan
+  vocab_size: 32000
+  dim: 768
+  num_layers: 18
+  heads: 12
+  titan_level:
+    name: titan
+    update_period: 16
+    optimizer_key: titan_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 8.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+  teach_scale: 0.10
+  teach_clip: 4.0
+  teach_schedule:
+    warmup_steps: 60
+    decay_start: 140
+    decay_duration: 80
+
+data:
+  source: mixture
+  batch_size: 4
+  num_workers: 2
+  mixture:
+    samples_per_epoch: 1024
+    seed: 42
+    sources:
+      - name: refinedweb
+        shards_dir: data/shards/refinedweb_full
+        weight: 0.4
+      - name: wikipedia
+        shards_dir: data/shards/wikipedia_full
+        weight: 0.2
+      - name: c4
+        shards_dir: data/shards/c4_full
+        weight: 0.15
+      - name: redpajama
+        shards_dir: data/shards/redpajama_full
+        weight: 0.15
+      - name: code
+        shards_dir: data/shards/code_full
+        weight: 0.1
+
+train:
+  steps: 220
+  log_interval: 20
+  device: "cuda:1"
+  checkpoint:
+    enable: true
+    dir: artifacts/checkpoints/mid_titan_baseline
+    save_interval: 100
+    resume_path: null
+    resume_tag: null
+
+optim:
+  lr: 1.0e-5
+
+logging:
+  enabled: true
+  backend: json
+  path: logs/mid_titan_baseline.json

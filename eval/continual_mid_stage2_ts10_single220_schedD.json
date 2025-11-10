@@ -1,0 +1,43 @@
+{
+  "checkpoints": [
+    "artifacts/checkpoints/mid_stage2_ts10_single220_schedD/step_000220.pt"
+  ],
+  "segments": [
+    {
+      "name": "refinedweb_segment",
+      "shards_dir": "data/shards/refinedweb_filtered",
+      "max_batches": 10
+    },
+    {
+      "name": "wikipedia_segment",
+      "shards_dir": "data/shards/wikipedia_filtered",
+      "max_batches": 10
+    },
+    {
+      "name": "redpajama_segment",
+      "shards_dir": "data/shards/redpajama_filtered",
+      "max_batches": 10
+    }
+  ],
+  "metrics": {
+    "step_000220": {
+      "refinedweb_segment": {
+        "loss": 10.070207008317025,
+        "ppl": 23628.45554963
+      },
+      "wikipedia_segment": {
+        "loss": 10.095827823049168,
+        "ppl": 24241.657657346874
+      },
+      "redpajama_segment": {
+        "loss": 10.052455834913161,
+        "ppl": 23212.72352009285
+      }
+    }
+  },
+  "forgetting": {
+    "refinedweb_segment": 0.0,
+    "wikipedia_segment": 0.0,
+    "redpajama_segment": 0.0
+  }
+}

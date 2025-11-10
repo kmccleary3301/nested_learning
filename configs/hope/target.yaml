@@ -1,0 +1,117 @@
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  vocab_size: 32000
+  dim: 1536
+  num_layers: 32
+  heads: 24
+  titan_level:
+    name: titan
+    update_period: 32
+    optimizer_key: titan_opt
+  cms_levels:
+    - name: cms_fast
+      update_period: 1
+      optimizer_key: cms_fast_opt
+    - name: cms_mid
+      update_period: 4
+      optimizer_key: cms_mid_opt
+    - name: cms_slow
+      update_period: 32
+      optimizer_key: cms_slow_opt
+    - name: cms_ultra
+      update_period: 128
+      optimizer_key: cms_slow_opt
+    - name: cms_anchor
+      update_period: 512
+      optimizer_key: cms_anchor_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 6.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_fast_opt:
+      type: deep_momentum
+      lr: 3.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_mid_opt:
+      type: deep_momentum
+      lr: 2.5e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_slow_opt:
+      type: deep_momentum
+      lr: 2.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_anchor_opt:
+      type: deep_momentum
+      lr: 1.5e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+
+data:
+  source: mixture
+  batch_size: 32
+  num_workers: 8
+  mixture:
+    samples_per_epoch: 32768
+    seed: 123
+    sources:
+      - name: refinedweb
+        shards_dir: data/shards/refinedweb_filtered
+        weight: 0.35
+      - name: wikipedia
+        shards_dir: data/shards/wikipedia_filtered
+        weight: 0.2
+      - name: c4
+        shards_dir: data/shards/c4_filtered
+        weight: 0.15
+      - name: redpajama
+        shards_dir: data/shards/redpajama_filtered
+        weight: 0.2
+      - name: code
+        shards_dir: data/shards/code_filtered
+        weight: 0.1
+
+train:
+  steps: 200
+  log_interval: 10
+  device: "cuda:1"
+  fsdp:
+    auto_wrap_min_params: 2000000
+    cpu_offload: false
+  checkpoint:
+    enable: true
+    dir: checkpoints/target
+    save_interval: 100
+    resume_path: null
+    resume_tag: null
+
+optim:
+  lr: 1.5e-4
+
+logging:
+  enabled: false
+  backend: wandb
+  project: nested-learning
+  run_name: target-${now:%Y%m%d%H%M%S}
+  path: logs/target_metrics.json
+
+deepspeed:
+  config: configs/deepspeed/zero3.json

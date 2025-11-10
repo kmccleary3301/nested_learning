@@ -1,0 +1,24 @@
+# Environment / tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local artifacts
+logs/
+artifacts/
+data/
+outputs/
+checkpoints/
+*.pt
+train.log
+train_dist.log
+ref_repos/
+configs/_tmp*
+
+# Editors
+.DS_Store
+.idea/
+.vscode/

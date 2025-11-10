@@ -1,0 +1,84 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
+
+model:
+  vocab_size: 32000
+  dim: 256
+  num_layers: 4
+  heads: 8
+  titan_level:
+    name: titan
+    update_period: 16
+    optimizer_key: titan_opt
+  cms_levels:
+    - name: cms_fast
+      update_period: 1
+      optimizer_key: cms_opt
+    - name: cms_mid
+      update_period: 4
+      optimizer_key: cms_opt
+    - name: cms_slow
+      update_period: 16
+      optimizer_key: cms_opt
+    - name: cms_ultra
+      update_period: 64
+      optimizer_key: cms_opt
+  optimizers:
+    titan_opt:
+      type: deep_momentum
+      lr: 8.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+    cms_opt:
+      type: deep_momentum
+      lr: 4.0e-4
+      params:
+        beta: 0.9
+        beta2: 0.999
+
+data:
+  source: mixture
+  batch_size: 4
+  num_workers: 0
+  mixture:
+    samples_per_epoch: 128
+    seed: 0
+    sources:
+      - name: refinedweb
+        shards_dir: data/shards/refinedweb_filtered
+        weight: 0.4
+      - name: wikipedia
+        shards_dir: data/shards/wikipedia_filtered
+        weight: 0.2
+      - name: c4
+        shards_dir: data/shards/c4_filtered
+        weight: 0.15
+      - name: redpajama
+        shards_dir: data/shards/redpajama_filtered
+        weight: 0.15
+      - name: code
+        shards_dir: data/shards/code_filtered
+        weight: 0.1
+
+train:
+  steps: 10
+  log_interval: 1
+  device: "cpu"
+  checkpoint:
+    enable: true
+    dir: artifacts/checkpoints/mid_smoke
+    save_interval: 10
+    save_last: true
+
+optim:
+  lr: 2.0e-4
+
+logging:
+  enabled: true
+  backend: json
+  path: logs/mid_smoke.json
