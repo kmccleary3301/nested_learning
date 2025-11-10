@@ -17,6 +17,7 @@ train.log
 train_dist.log
 ref_repos/
 configs/_tmp*
+git.env
 
 # Editors
 .DS_Store
