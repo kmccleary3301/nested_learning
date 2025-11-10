@@ -18,8 +18,9 @@
   - [ ] Execute 1.3 B / 100 B training with long-context curriculum.
 - [ ] **Evaluation Harness**
   - [x] Implement `scripts/eval/zeroshot.py` scaffolding (PIQA baseline).
+  - [x] Extend zero-shot harness to cover PIQA/HellaSwag/WinoGrande/ARC-E/C/BoolQ/SIQA/CommonsenseQA/OpenBookQA and document usage.
   - [x] Build NIAH long-context scaffolding script (`scripts/eval/niah.py`).
-  - [x] Add continual-learning scripts measuring forgetting over streaming domains.
+  - [ ] Add continual-learning scripts measuring forgetting over streaming domains.
   - [ ] Capture Stage 2 eval packs (zeroshot/NIAH/continual) from mid-scale checkpoints once stable.
 - [ ] **Ablations & Analysis**
   - [ ] Run self-modifier off/on comparison at pilot scale.

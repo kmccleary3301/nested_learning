@@ -92,9 +92,9 @@ Set `logging.enabled=true` in Hydra configs (or override via CLI) to send metric
     --config configs/hope/mid.yaml \
     --checkpoint checkpoints/mid/step_000100.pt \
     --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
-    --tasks piqa,hellaswag,winogrande,arc_easy,arc_challenge,boolq,siqa \
-    --max-samples 200 --device cuda:0
+    --tasks all --max-samples 200 --device cuda:0
   ```
+  Use `uv run python scripts/eval/zeroshot.py --list-tasks` to display the full benchmark roster (PIQA, HellaSwag, WinoGrande, ARC-E/C, BoolQ, SIQA, CommonsenseQA, OpenBookQA). See `docs/zeroshot_eval.md` for details.
 - Needle-in-a-Haystack:
   ```bash
   uv run python scripts/eval/niah.py \

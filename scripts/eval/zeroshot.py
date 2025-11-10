@@ -65,82 +65,110 @@ def evaluate_multiple_choice(
     return {f"{task_name}_accuracy": accuracy, f"{task_name}_samples": total}
 
 
+def build_piqa_texts(sample: dict) -> Tuple[List[str], int]:
+    prompt = sample["goal"].strip()
+    options = [sample["sol1"].strip(), sample["sol2"].strip()]
+    texts = [f"{prompt} {opt}" for opt in options]
+    target = sample["label"]
+    return texts, target
+
+
 def eval_piqa(model, tokenizer, device, max_samples):
     dataset = load_dataset("piqa", split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice("piqa", dataset, build_piqa_texts, tokenizer, model, device, max_samples)
 
-    def build(sample: dict) -> Tuple[List[str], int]:
-        prompt = sample["goal"].strip()
-        options = [sample["sol1"].strip(), sample["sol2"].strip()]
-        texts = [f"{prompt} {opt}" for opt in options]
-        target = sample["label"]
-        return texts, target
 
-    return evaluate_multiple_choice("piqa", dataset, build, tokenizer, model, device, max_samples)
+def build_hellaswag_texts(sample: dict) -> Tuple[List[str], int]:
+    prompt = f"{sample['ctx_a'].strip()} {sample['ctx_b'].strip()}".strip()
+    endings = [ending.strip() for ending in sample["endings"]]
+    texts = [f"{prompt} {ending}" for ending in endings]
+    target = sample["label"]
+    return texts, target
 
 
 def eval_hellaswag(model, tokenizer, device, max_samples):
     dataset = load_dataset("hellaswag", split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice("hellaswag", dataset, build_hellaswag_texts, tokenizer, model, device, max_samples)
 
-    def build(sample: dict) -> Tuple[List[str], int]:
-        prompt = f"{sample['ctx_a'].strip()} {sample['ctx_b'].strip()}".strip()
-        endings = [ending.strip() for ending in sample["endings"]]
-        texts = [f"{prompt} {ending}" for ending in endings]
-        target = sample["label"]
-        return texts, target
 
-    return evaluate_multiple_choice("hellaswag", dataset, build, tokenizer, model, device, max_samples)
+def build_winogrande_texts(sample: dict) -> Tuple[List[str], int]:
+    sentence = sample["sentence"]
+    options = [sample["option1"].strip(), sample["option2"].strip()]
+    texts = [sentence.replace("_", opt) for opt in options]
+    target = int(sample["answer"]) - 1
+    return texts, target
 
 
 def eval_winogrande(model, tokenizer, device, max_samples):
     dataset = load_dataset("winogrande", "winogrande_xl", split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice("winogrande", dataset, build_winogrande_texts, tokenizer, model, device, max_samples)
 
-    def build(sample: dict) -> Tuple[List[str], int]:
-        sentence = sample["sentence"]
-        options = [sample["option1"].strip(), sample["option2"].strip()]
-        texts = [sentence.replace("_", opt) for opt in options]
-        target = int(sample["answer"]) - 1
-        return texts, target
 
-    return evaluate_multiple_choice("winogrande", dataset, build, tokenizer, model, device, max_samples)
+def build_arc_texts(sample: dict) -> Tuple[List[str], int]:
+    prompt = sample["question"].strip()
+    choice_texts = sample["choices"]["text"]
+    labels = sample["choices"]["label"]
+    texts = [f"{prompt} {choice.strip()}" for choice in choice_texts]
+    target = labels.index(sample["answerKey"])
+    return texts, target
 
 
 def eval_arc(model, tokenizer, device, max_samples, difficulty: str) -> Dict[str, float]:
     dataset = load_dataset("ai2_arc", difficulty, split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice(f"arc_{difficulty.lower()}", dataset, build_arc_texts, tokenizer, model, device, max_samples)
 
-    def build(sample: dict) -> Tuple[List[str], int]:
-        prompt = sample["question"].strip()
-        choice_texts = sample["choices"]["text"]
-        labels = sample["choices"]["label"]
-        texts = [f"{prompt} {choice.strip()}" for choice in choice_texts]
-        target = labels.index(sample["answerKey"])
-        return texts, target
 
-    return evaluate_multiple_choice(f"arc_{difficulty.lower()}", dataset, build, tokenizer, model, device, max_samples)
+def build_boolq_texts(sample: dict) -> Tuple[List[str], int]:
+    prompt = f"{sample['passage'].strip()}\nQuestion: {sample['question'].strip()}\nAnswer:"
+    texts = [f"{prompt} yes", f"{prompt} no"]
+    target = 0 if sample["answer"] else 1
+    return texts, target
 
 
 def eval_boolq(model, tokenizer, device, max_samples):
     dataset = load_dataset("boolq", split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice("boolq", dataset, build_boolq_texts, tokenizer, model, device, max_samples)
 
-    def build(sample: dict) -> Tuple[List[str], int]:
-        prompt = f"{sample['passage'].strip()}\nQuestion: {sample['question'].strip()}\nAnswer:"
-        texts = [f"{prompt} yes", f"{prompt} no"]
-        target = 0 if sample["answer"] else 1
-        return texts, target
 
-    return evaluate_multiple_choice("boolq", dataset, build, tokenizer, model, device, max_samples)
+def build_siqa_texts(sample: dict) -> Tuple[List[str], int]:
+    prompt = f"Context: {sample['context'].strip()} Question: {sample['question'].strip()} Answer:"
+    options = [sample["answerA"].strip(), sample["answerB"].strip(), sample["answerC"].strip()]
+    texts = [f"{prompt} {opt}" for opt in options]
+    target = int(sample["label"]) - 1
+    return texts, target
 
 
 def eval_siqa(model, tokenizer, device, max_samples):
     dataset = load_dataset("social_i_qa", split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice("siqa", dataset, build_siqa_texts, tokenizer, model, device, max_samples)
 
-    def build(sample: dict) -> Tuple[List[str], int]:
-        prompt = f"Context: {sample['context'].strip()} Question: {sample['question'].strip()} Answer:"
-        options = [sample["answerA"].strip(), sample["answerB"].strip(), sample["answerC"].strip()]
-        texts = [f"{prompt} {opt}" for opt in options]
-        target = int(sample["label"]) - 1
-        return texts, target
 
-    return evaluate_multiple_choice("siqa", dataset, build, tokenizer, model, device, max_samples)
+def build_commonsenseqa_texts(sample: dict) -> Tuple[List[str], int]:
+    prompt = sample["question"].strip()
+    choice_texts = sample["choices"]["text"]
+    labels = sample["choices"]["label"]
+    texts = [f"{prompt} {choice.strip()}" for choice in choice_texts]
+    target = labels.index(sample["answerKey"])
+    return texts, target
+
+
+def eval_commonsenseqa(model, tokenizer, device, max_samples):
+    dataset = load_dataset("commonsense_qa", split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice("commonsenseqa", dataset, build_commonsenseqa_texts, tokenizer, model, device, max_samples)
+
+
+def build_openbookqa_texts(sample: dict) -> Tuple[List[str], int]:
+    prompt = sample["question_stem"].strip()
+    choice_texts = sample["choices"]["text"]
+    labels = sample["choices"]["label"]
+    texts = [f"{prompt} {choice.strip()}" for choice in choice_texts]
+    target = labels.index(sample["answerKey"])
+    return texts, target
+
+
+def eval_openbookqa(model, tokenizer, device, max_samples):
+    dataset = load_dataset("openbookqa", "main", split="validation", **HF_DATASET_KWARGS)
+    return evaluate_multiple_choice("openbookqa", dataset, build_openbookqa_texts, tokenizer, model, device, max_samples)
 
 
 TASK_EVALUATORS = {
@@ -151,6 +179,8 @@ TASK_EVALUATORS = {
     "arc_challenge": lambda model, tok, dev, n: eval_arc(model, tok, dev, n, "ARC-Challenge"),
     "boolq": eval_boolq,
     "siqa": eval_siqa,
+    "commonsenseqa": eval_commonsenseqa,
+    "openbookqa": eval_openbookqa,
 }
 
 
@@ -163,8 +193,14 @@ def main(
     max_samples: int = typer.Option(500, help="Max samples per task (0 = entire split)."),
     output: Path = typer.Option(Path("eval/zeroshot_results.json"), help="Output JSON file."),
     device: str = typer.Option("cuda:0" if torch.cuda.is_available() else "cpu", help="Device to run eval on."),
+    list_tasks: bool = typer.Option(False, "--list-tasks", help="List available tasks and exit."),
 ) -> None:
-    selected_tasks = list(TASK_EVALUATORS.keys()) if tasks.lower() == "all" else [t.strip().lower() for t in tasks.split(",")]
+    available = list(TASK_EVALUATORS.keys())
+    if list_tasks:
+        typer.echo("Available tasks: " + ", ".join(available))
+        raise typer.Exit(0)
+
+    selected_tasks = available if tasks.lower() == "all" else [t.strip().lower() for t in tasks.split(",")]
     torch_device = torch.device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)
@@ -173,7 +209,7 @@ def main(
     for task in selected_tasks:
         evaluator = TASK_EVALUATORS.get(task)
         if evaluator is None:
-            raise ValueError(f"Unsupported task '{task}'. Valid tasks: {list(TASK_EVALUATORS.keys())}")
+            raise ValueError(f"Unsupported task '{task}'. Valid tasks: {available}")
         metrics = evaluator(model, tokenizer, torch_device, None if max_samples <= 0 else max_samples)
         results.update(metrics)
 
