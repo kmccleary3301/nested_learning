@@ -28,7 +28,7 @@ uv run python scripts/data/process_mixture.py \
   --log-file data/mixtures/refinedweb_mix_filtered_shards.json
 ```
 
-This iterates over each dataset entry, streams up to the specified `max_records`, tokenizes at sequence length 512, and writes NumPy shards to `data/shards/<dataset>`. Stats (records, sequences, shards) are recorded in the log file. For the filtered run, each dataset was preprocessed via `scripts/data/filter_corpus.py` to produce cleaned text files under `data/filtered/`.
+This iterates over each dataset entry (either streamed from HF or the filtered local files), tokenizes at sequence length 2048, and writes NumPy shards to `data/shards/<dataset>`. Stats (records, sequences, shards, total tokens) are recorded in `data/mixtures/refinedweb_mix_shards_full.json`.
 
 ## 3. Legacy pilot data
 - `data/shards/tinystories_train/` retains 1,718 shards for unit tests and smoke runs.
@@ -52,11 +52,12 @@ Adjust dataset/subset arguments per manifest entry. The script enforces language
 
 ## 5. Artifacts & stats
 - Tokenizer samples: `data/mixtures/refinedweb_mix_tokenizer.json`
-- Shard stats (streamed sample): `data/mixtures/refinedweb_mix_shards.json`
-- Shard stats (filtered local files): `data/mixtures/refinedweb_mix_filtered_shards.json`
+- Shard stats (pilot stream): `data/mixtures/refinedweb_mix_shards.json`
+- Shard stats (filtered sample run): `data/mixtures/refinedweb_mix_filtered_shards.json`
+- Shard stats (full filtered run, seq_len=2048): `data/mixtures/refinedweb_mix_shards_full.json`
 - Tokenizer model: `artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model`
 
 ## 6. Next steps
-- Swap manifest sample limits with full-scale counts once storage and bandwidth permit, then rerun the commands above.
-- Implement dedup/language-ID filtering pre-sharding.
-- Version mixture manifests and stats under `configs/data/` as recipes change.
+- Integrate the full shards into the training configs (see `configs/hope/mid.yaml`, `configs/hope/target.yaml`).
+- Automate periodic re-generation (e.g., weekly) if new data arrives.
+- Version mixture manifests and stats under `configs/data/` as recipes evolve.
