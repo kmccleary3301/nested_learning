@@ -18,6 +18,7 @@ train_dist.log
 ref_repos/
 configs/_tmp*
 git.env
+docs/POSTS.md
 
 # Editors
 .DS_Store
