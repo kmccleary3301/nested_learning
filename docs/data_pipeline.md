@@ -56,6 +56,7 @@ Adjust dataset/subset arguments per manifest entry. The script enforces language
 - Shard stats (filtered sample run): `data/mixtures/refinedweb_mix_filtered_shards.json`
 - Shard stats (full filtered run, seq_len=2048): `data/mixtures/refinedweb_mix_shards_full.json`
 - Tokenizer model: `artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model`
+- Continual-learning sample segments: `configs/data/continual_segments_sample.yaml`
 
 ## 6. Next steps
 - Integrate the full shards into the training configs (see `configs/hope/mid.yaml`, `configs/hope/target.yaml`).

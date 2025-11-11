@@ -111,6 +111,14 @@ Set `logging.enabled=true` in Hydra configs (or override via CLI) to send metric
     --segments-yaml configs/data/continual_segments_sample.yaml \
     --batch-size 4 --max-batches 10
   ```
+- Continual-learning forgetting:
+  ```bash
+  uv run python scripts/eval/continual.py \
+    --config configs/hope/mid.yaml \
+    --checkpoints checkpoints/mid/step_000050.pt checkpoints/mid/step_000100.pt \
+    --segments-yaml configs/data/continual_segments_sample.yaml \
+    --batch-size 4 --max-batches 10
+  ```
 
 Evaluation summaries are written to `eval/` alongside per-task JSON metrics.
 
