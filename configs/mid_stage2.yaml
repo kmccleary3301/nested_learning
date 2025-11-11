@@ -75,6 +75,14 @@ train:
   steps: 100
   log_interval: 10
   device: "cuda"
+  seed: 3401
+  deterministic: false
+  mixed_precision:
+    enabled: true
+    dtype: bf16
+  compile:
+    enable: true
+    mode: max-autotune
   fsdp:
     auto_wrap_min_params: 2000000
     cpu_offload: false
@@ -86,7 +94,9 @@ train:
     resume_tag: null
 
 optim:
+  type: adamw
   lr: 3.0e-5
+  fused: auto
 
 logging:
   enabled: true

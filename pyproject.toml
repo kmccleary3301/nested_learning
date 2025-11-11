@@ -2,7 +2,7 @@
 name = "nested-learning"
 version = "0.1.0"
 description = "Reproduction of Google's Nested Learning (HOPE) architecture"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 authors = [
   {name = "Nested Learning Team", email = "nested-learning@example.com"}
 ]

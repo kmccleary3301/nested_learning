@@ -46,7 +46,8 @@ uv run pytest
 | `configs/hope/*.yaml` | Hydra configs for pilot/mid/target scales plus smoke variants |
 | `scripts/data/` | Tokenizer training, corpus filtering, mixture processing, sample shortcuts |
 | `scripts/run_smoke.sh` | CPU-friendly pilot/mid smoke training entry point |
-| `scripts/run_e2e_smoke.sh` | (Added in release workflow) Chains sync → data sample → smoke train → eval |
+| `scripts/run_e2e_smoke.sh` | Chains sync → data sample → smoke train → zeroshot eval |
+| `scripts/run_cpu_ddp_smoke.sh` | Two-rank CPU DDP smoke (forces `gloo`, checks determinism) |
 | `scripts/eval/*.py` | Zero-shot, NIAH, continual-learning evaluators |
 | `artifacts/` | Tokenizers, checkpoints, example logs |
 | `docs/` | Plans, this guide, release checklist, data pipeline notes |
@@ -58,7 +59,7 @@ uv run pytest
 2. **Sample data:** `uv run bash scripts/data/run_sample.sh` (downloads + filters RefinedWeb/Wiki/C4/SlimPajama/code samples, shards them, records stats in `data/mixtures/refinedweb_mix_filtered_shards.json`).
 3. **Smoke training:** `uv run bash scripts/run_smoke.sh pilot` (runs CPU pilot config, saves checkpoints to `artifacts/checkpoints/pilot_smoke/`).
 4. **Zero-shot sanity:** `uv run python scripts/eval/zeroshot.py --tasks piqa --max-samples 32 --checkpoint artifacts/examples/pilot_dummy.pt --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --config configs/hope/pilot.yaml --device cpu`
-5. **Full automation (optional):** `uv run bash scripts/run_e2e_smoke.sh` once created; it orchestrates steps 1–4, checks logs under `logs/`.
+5. **Full automation (optional):** `uv run bash scripts/run_e2e_smoke.sh` (sync → sample data → smoke train → PIQA eval, logs under `logs/`).
 
 All commands default to CPU; pass `--device cuda:0` (or `cuda:1`) to leverage GPUs.
 
@@ -86,10 +87,17 @@ Document disk needs (≈2 TB for 100 B tokens) before launching large jobs.
 - **Entry points:**
   - Single GPU/CPU: `uv run python train.py --config-name pilot_smoke`
   - DDP: `torchrun --nproc_per_node=2 train_dist.py --config-name mid`
+  - CPU-only DDP smoke: `uv run bash scripts/run_cpu_ddp_smoke.sh`
   - FSDP: `torchrun --nproc_per_node=2 train_fsdp.py --config-name mid`
   - DeepSpeed: `deepspeed --num_gpus=2 train_deepspeed.py --config-name target deepspeed.config=configs/deepspeed/zero3.json`
 - **Logging:** Set `logging.backend=json logging.path=logs/<run>.json` to write structured metrics (level firings, CMS norms, self-mod deltas). W&B is supported by flipping `logging.backend=wandb`.
 - **Artifacts:** Checkpoints land in `artifacts/checkpoints/<run>/step_xxxxxx.pt` with accompanying optimizer + clock states.
+
+### Performance toggles
+- **Mixed precision:** `train.mixed_precision.enabled=true train.mixed_precision.dtype=bf16` (defaults to CPU-safe no-op).
+- **`torch.compile`:** `train.compile.enable=true train.compile.mode=max-autotune` wraps HOPE blocks in TorchDynamo for faster kernels.
+- **Fused optimizers:** keep `optim.type=adamw optim.fused=auto` (defaults) to pick CUDA fused kernels automatically.
+- **Muon optimizer:** `optim.type=muon optim.lr=2.5e-4 optim.weight_decay=0.01` routes ≥2D weights through `torch.optim.Muon` while embeddings/norms stay on AdamW. Works with mixed-precision + compile toggles.
 
 ---
 
@@ -111,6 +119,15 @@ uv run python scripts/eval/zeroshot.py \
 ```
 
 Evaluation outputs are JSON summaries stored under `eval/<task>/<timestamp>.json` (created automatically).
+
+### Test-time memorization
+Nested Learning inherits TITAN's ability to learn at inference time. All evaluation CLIs expose:
+- `--memorize` (bool) to enable per-sample inner-loop updates.
+- `--memorize-steps N` to take N passes (default 1).
+- `--memorize-use-correct-answer` to inject the ground-truth choice during memorization for ablations.
+- `--memorize-no-reset` to keep memories across samples; omit for per-sample resets.
+
+Use paired runs (with/without `--memorize`) to log adaptation gains; both JSON outputs live under `eval/` for comparison.
 
 ---
 

@@ -15,6 +15,8 @@ from nested_learning.training import (
     build_dataloader,
     build_model_from_cfg,
     compute_teach_signal,
+    _seed_everything,
+    unwrap_config,
 )
 
 try:
@@ -42,7 +44,12 @@ def load_ds_config(path: str | Path) -> dict:
 
 @hydra.main(config_path="configs", config_name="hope/target", version_base=None)
 def main(cfg: DictConfig) -> None:
+    cfg = unwrap_config(cfg)
     dist_ctx = setup_distributed()
+    train_seed = cfg.train.get("seed")
+    deterministic = cfg.train.get("deterministic", False)
+    if train_seed is not None:
+        _seed_everything(int(train_seed), deterministic=bool(deterministic))
     model = build_model_from_cfg(cfg.model)
     ds_config = load_ds_config(cfg.deepspeed.config)
     engine, optimizer, _, _ = deepspeed.initialize(
@@ -51,7 +58,14 @@ def main(cfg: DictConfig) -> None:
         config=ds_config,
     )
 
-    dataloader, sampler = build_dataloader(cfg.data, distributed=True, dist_ctx=dist_ctx)
+    train_seed = cfg.train.get("seed")
+    loader_seed = None if train_seed is None else int(train_seed) + dist_ctx.rank
+    dataloader, sampler = build_dataloader(
+        cfg.data,
+        distributed=True,
+        dist_ctx=dist_ctx,
+        seed=loader_seed,
+    )
     logger = init_logger(getattr(cfg, "logging", None), cfg) if engine.global_rank == 0 else NullLogger()
     steps = cfg.train.steps
     log_interval = cfg.train.get("log_interval", 10)

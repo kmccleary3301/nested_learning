@@ -5,7 +5,7 @@ from typing import Dict, Iterable, Optional, Sequence
 import torch
 import torch.nn as nn
 
-from .levels import LevelClock, LevelSpec, ensure_level_specs
+from .levels import LevelSpec, ensure_level_specs
 
 
 class CMSBlock(nn.Module):
@@ -56,7 +56,8 @@ class CMS(nn.Module):
     ) -> None:
         super().__init__()
         ordered = ensure_level_specs(levels)
-        self.clock = LevelClock(ordered)
+        self.level_specs: Sequence[LevelSpec] = tuple(ordered)
+        self._spec_map: Dict[str, LevelSpec] = {spec.name: spec for spec in ordered}
         self.blocks = nn.ModuleDict(
             {
                 spec.name: CMSBlock(
@@ -65,9 +66,13 @@ class CMS(nn.Module):
                     activation=activation,
                     grad_clip=1.0,
                 )
-                for spec in ordered
+                for spec in self.level_specs
             }
         )
+        self._chunk_buffers: Dict[str, list[dict[str, torch.Tensor]]] = {
+            spec.name: [] for spec in self.level_specs
+        }
+        self.last_update_stats: Dict[str, Dict[str, float]] = {}
 
     def forward(
         self,
@@ -78,7 +83,7 @@ class CMS(nn.Module):
         current = x
         inputs: Dict[str, torch.Tensor] = {}
         outputs: Dict[str, torch.Tensor] = {}
-        for spec in self.clock.levels_in_frequency_order():
+        for spec in self.level_specs:
             block = self.blocks[spec.name]
             inputs[spec.name] = current
             current = block(current)
@@ -87,20 +92,16 @@ class CMS(nn.Module):
             return current, inputs, outputs
         return current
 
-    def maybe_update(
+    def accumulate_chunks(
         self,
         *,
         inputs: Dict[str, torch.Tensor],
         outputs: Dict[str, torch.Tensor],
         error_signals: Optional[Dict[str, torch.Tensor]] = None,
-        lr: float = 1e-3,
-    ) -> Dict[str, float]:
-        magnitudes: Dict[str, float] = {}
-        for spec in self.clock.levels_in_frequency_order():
+    ) -> Dict[str, tuple[torch.Tensor, torch.Tensor]]:
+        ready: Dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        for spec in self.level_specs:
             name = spec.name
-            if not self.clock.should_update(name):
-                continue
-            block = self.blocks[name]
             block_input = inputs[name]
             block_output = outputs[name]
             delta_target = (
@@ -108,19 +109,40 @@ class CMS(nn.Module):
                 if error_signals and name in error_signals
                 else block_output - block_input
             )
-            with torch.enable_grad():
-                temp_inp = block_input.detach().requires_grad_(True)
-                temp_out = block(temp_inp)
-                loss = torch.mean((temp_out - (temp_inp + delta_target.detach())) ** 2)
-            grads = torch.autograd.grad(loss, list(block.parameters()), retain_graph=False, allow_unused=True)
-            total_norm = 0.0
-            with torch.no_grad():
-                for param, grad in zip(block.parameters(), grads):
-                    if grad is None:
-                        continue
-                    param.add_(grad, alpha=-lr)
-                    total_norm += grad.norm().item()
-            magnitudes[name] = total_norm
-            self.clock.record_update(name)
-        self.clock.tick()
-        return magnitudes
+            self._chunk_buffers[name].append(
+                {
+                    "input": block_input.detach(),
+                    "target": (block_input + delta_target).detach(),
+                }
+            )
+            chunk_size = spec.update_period
+            if len(self._chunk_buffers[name]) < chunk_size:
+                continue
+            entries = [self._chunk_buffers[name].pop(0) for _ in range(chunk_size)]
+            chunk_inputs = self._pad_and_cat([entry["input"] for entry in entries])
+            chunk_targets = self._pad_and_cat([entry["target"] for entry in entries])
+            ready[name] = (chunk_inputs, chunk_targets)
+        return ready
+
+    @staticmethod
+    def _pad_and_cat(tensors: list[torch.Tensor]) -> torch.Tensor:
+        if not tensors:
+            raise ValueError("No tensors to stack")
+        seq_lens = {tensor.shape[1] for tensor in tensors}
+        if len(seq_lens) == 1:
+            return torch.cat(tensors, dim=0)
+        max_len = max(seq_lens)
+        padded = []
+        for tensor in tensors:
+            if tensor.shape[1] == max_len:
+                padded.append(tensor)
+                continue
+            pad_len = max_len - tensor.shape[1]
+            pad_shape = (tensor.shape[0], pad_len, tensor.shape[2])
+            pad = torch.zeros(
+                pad_shape,
+                device=tensor.device,
+                dtype=tensor.dtype,
+            )
+            padded.append(torch.cat([tensor, pad], dim=1))
+        return torch.cat(padded, dim=0)

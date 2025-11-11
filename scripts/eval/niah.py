@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import torch
 import typer
@@ -12,7 +12,13 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from nested_learning.model import HOPEModel
-from nested_learning.training import build_model_from_cfg
+from nested_learning.memorize import (
+    MemorizeConfig,
+    memorize_sequence,
+    restore_state_dict,
+    snapshot_state_dict,
+)
+from nested_learning.training import build_model_from_cfg, unwrap_config
 from nested_learning.tokenizer import SentencePieceTokenizer
 
 app = typer.Typer(add_completion=False, help="Needle-in-a-haystack evaluation scaffolding.")
@@ -20,12 +26,16 @@ app = typer.Typer(add_completion=False, help="Needle-in-a-haystack evaluation sc
 
 def load_model(config_path: Path, checkpoint: Path, device: torch.device) -> HOPEModel:
     cfg = OmegaConf.load(config_path)
+    cfg = unwrap_config(cfg)
     model = build_model_from_cfg(cfg.model)
     state = torch.load(checkpoint, map_location="cpu")
-    if "model" in state:
-        model.load_state_dict(state["model"])
-    else:
-        model.load_state_dict(state)
+    state_dict = state["model"] if "model" in state else state
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing or unexpected:
+        print(
+            "[eval] Warning: state_dict mismatch "
+            f"(missing={len(missing)} unexpected={len(unexpected)}) – continuing."
+        )
     return model.to(device).eval()
 
 
@@ -61,21 +71,41 @@ def main(
     samples_per_length: int = typer.Option(50, help="Samples per context length."),
     device: str = typer.Option("cuda:0" if torch.cuda.is_available() else "cpu"),
     output: Path = typer.Option(Path("eval/niah_results.json")),
+    memorize: bool = typer.Option(False, help="Enable test-time memorization for each prompt."),
+    memorize_steps: int = typer.Option(1, help="Memorization passes per prompt."),
+    memorize_use_correct_answer: bool = typer.Option(False, help="Include correct key when memorizing."),
+    memorize_no_reset: bool = typer.Option(False, help="Retain memory between samples."),
 ) -> None:
     torch_device = torch.device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)
+    memorize_cfg = MemorizeConfig(
+        enabled=memorize,
+        steps=max(1, memorize_steps),
+        reset=not memorize_no_reset,
+        use_correct_answer=memorize_use_correct_answer,
+    )
+    base_state: Dict[str, torch.Tensor] | None = None
     results = {}
     for length in context_lengths:
         correct = 0
         for _ in tqdm(range(samples_per_length), desc=f"NIAH@{length}"):
             needle = f"KEY-{random.randint(1000, 9999)}"
             prompt = make_prompt(needle, filler_tokens=max(1, length // 128))
+            if memorize_cfg.enabled:
+                if memorize_cfg.reset and base_state is None:
+                    base_state = snapshot_state_dict(model)
+                memorize_text = prompt
+                if memorize_cfg.use_correct_answer:
+                    memorize_text = f"{prompt} {needle}"
+                memorize_sequence(model, tokenizer, memorize_text, torch_device, memorize_cfg.steps)
             logprob_true = logprob_answer(model, tokenizer, prompt, needle, torch_device)
             distractor = f"KEY-{random.randint(1000, 9999)}"
             logprob_false = logprob_answer(model, tokenizer, prompt, distractor, torch_device)
             if logprob_true > logprob_false:
                 correct += 1
+            if memorize_cfg.enabled and memorize_cfg.reset and base_state is not None:
+                restore_state_dict(model, base_state)
         accuracy = correct / samples_per_length
         results[f"niah_{length}"] = accuracy
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -82,12 +82,13 @@ class TitanOnlyBlock(nn.Module):
             value=pooled_value.detach(),
             error_signal=pooled_error.detach(),
         )
+        context_vec = attn_out.detach().mean(dim=(0, 1))
         with torch.enable_grad():
             query = attn_out.detach().requires_grad_(True)
             target = (teach_signal.detach() + modifier.unsqueeze(1)).detach()
             prediction = self.titan_memory(query)
             loss = nn.functional.mse_loss(prediction, target)
-        self.level_manager.optimize(level_name, self.titan_memory, loss)
+        self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
 
 
 class TitanOnlyModel(nn.Module):
@@ -98,6 +99,7 @@ class TitanOnlyModel(nn.Module):
         self.blocks = nn.ModuleList([TitanOnlyBlock(config) for _ in range(config.num_layers)])
         self.norm = nn.LayerNorm(config.dim)
         self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
+        self.lm_head.weight = self.embed.weight
         self._runtime_teach_scale = config.teach_scale
         self._runtime_teach_clip = config.teach_clip
 

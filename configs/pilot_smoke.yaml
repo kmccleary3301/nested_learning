@@ -50,6 +50,13 @@ train:
   steps: 10
   log_interval: 1
   device: "cpu"
+  seed: 1234
+  deterministic: true
+  mixed_precision:
+    enabled: false
+    dtype: bf16
+  compile:
+    enable: false
   checkpoint:
     enable: true
     dir: artifacts/checkpoints/pilot_smoke
@@ -57,7 +64,9 @@ train:
     save_last: true
 
 optim:
+  type: adamw
   lr: 3.0e-4
+  fused: false
 
 logging:
   enabled: true

@@ -75,6 +75,42 @@ Even at 0.20, residual clipping kept the run stable, indicating headroom for lar
 
 These runs validate the distributed training/eval path and are the recommended “smoke” workflows for contributors.
 
+### 3.5 Test-Time Memorization Harness
+HOPE/TITAN models now support TITAN-style test-time learning via shared CLI flags:
+
+```
+uv run python scripts/eval/zeroshot.py \
+  --config configs/mid_stage2_smoke.yaml \
+  --checkpoint artifacts/checkpoints/mid_stage2_smoke/step_000060.pt \
+  --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
+  --tasks piqa \
+  --max-samples 32 \
+  --output eval/zeroshot_mid_stage2_smoke_piqa_mem.json \
+  --device cuda:1 \
+  --memorize \
+  --memorize-steps 2 \
+  --memorize-use-correct-answer
+```
+
+NIAH and continual harnesses expose analogous options (`--memorize`, `--memorize-steps`, `--memorize-no-reset`, `--memorize-use-correct-answer`). The memorization loop replays the prompt (optionally augmented with the correct answer) through the teach-signal pathway before each eval query, letting us probe TITAN-style “learning at test time”.
+
+Pilot PIQA example (32-sample subset, single GPU):
+
+| Mode | Command / Output | Accuracy |
+|------|------------------|----------|
+| Baseline | `eval/zeroshot_mid_stage2_smoke_piqa_baseline.json` | 0.5625 |
+| Memorize (prompt + answer, 2 steps) | `eval/zeroshot_mid_stage2_smoke_piqa_mem.json` | 0.5625 |
+
+At this scale, memorization neither helps nor hurts, but the infrastructure is in place to replicate the substantial gains reported in HOPE/TITAN once longer contexts and richer checkpoints are available.
+
+### 3.6 Pilot (3 B tokens) – in progress
+- **Config:** `configs/pilot.yaml` (dim = 512, 12 layers, TITAN + CMS fast/mid/slow/ultra, teach_schedule warmup 2k → decay 120k→140k).
+- **Run target:** 246 667 steps (batch 6 × seq 2048 ≈ 3.03 B tokens) on `cuda:1`, lr = 2.5e‑4 AdamW + Muon option disabled for parity with Stage 1.
+- **Logging:** W&B project `nested-learning`, run `pilot-main-20251111161514` (`https://wandb.ai/lsu-kmccleary-0/nested-learning/runs/oy73f2m6`). Local console mirrors under `wandb/run-*/files/output.log`.
+- **Status:** Step 150 reached with loss dropping from 93.4 → 40.2. Estimated wall-clock ≈52 hours for full 3 B tokens. Checkpoints saved every 1 000 steps to `artifacts/checkpoints/pilot/`.
+- **Packaging:** `artifacts/pilot_release/` now contains a manifest stub (`metadata.json`, README) so the eventual checkpoint, config, logs, and eval outputs can be bundled for contributors without rerunning the long job.
+- **Eval prep:** Zero-shot, NIAH (up to 64 k contexts), and continual-learning scripts were dry-run against the sample `artifacts/examples/pilot_dummy.pt` checkpoint to confirm the new memorization/compatibility flows before the real pilot weights land.
+
 ---
 
 ## 4. Observations & Lessons Learned

@@ -4,11 +4,12 @@ import hydra
 import torch
 from omegaconf import DictConfig
 
-from nested_learning.training import run_training_loop
+from nested_learning.training import run_training_loop, unwrap_config
 
 
-@hydra.main(config_path="configs", config_name="hope/pilot", version_base=None)
+@hydra.main(config_path="configs", config_name="pilot", version_base=None)
 def main(cfg: DictConfig) -> None:
+    cfg = unwrap_config(cfg)
     device = _resolve_device(cfg.train.device)
     run_training_loop(cfg, device=device, distributed=False)
 

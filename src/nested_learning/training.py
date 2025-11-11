@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, Tuple
+import random
 
+import numpy as np
 import torch
+import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler, IterableDataset
 
@@ -27,6 +31,15 @@ class DistributedContext:
     rank: int
     world_size: int
     device: torch.device
+
+
+def unwrap_config(cfg: DictConfig) -> DictConfig:
+    """Hydra can wrap grouped configs (e.g., hope/pilot) under the group name."""
+    if "model" in cfg:
+        return cfg
+    if "hope" in cfg:
+        return cfg.hope
+    return cfg
 
 
 def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
@@ -75,6 +88,7 @@ def build_dataloader(
     *,
     distributed: bool,
     dist_ctx: DistributedContext | None,
+    seed: int | None = None,
 ) -> Tuple[DataLoader, DistributedSampler | None]:
     dataset = _build_dataset(data_cfg)
     use_sampler = distributed and not isinstance(dataset, IterableDataset)
@@ -93,6 +107,12 @@ def build_dataloader(
         shuffle = True
     if isinstance(dataset, IterableDataset):
         shuffle = False
+    generator = None
+    worker_init_fn = None
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        worker_init_fn = _make_worker_init_fn(seed)
     dataloader = DataLoader(
         dataset,
         batch_size=data_cfg.batch_size,
@@ -101,6 +121,8 @@ def build_dataloader(
         collate_fn=collate_batch,
         num_workers=data_cfg.get("num_workers", 0),
         pin_memory=True,
+        worker_init_fn=worker_init_fn,
+        generator=generator,
     )
     return dataloader, sampler
 
@@ -138,12 +160,28 @@ def _build_dataset(data_cfg: DictConfig):
     raise ValueError(msg)
 
 
-def compute_teach_signal(model: HOPEModel, logits: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
-    probs = torch.softmax(logits.detach(), dim=-1)
-    targets = torch.nn.functional.one_hot(tokens, probs.size(-1)).float()
-    residual = probs - targets
-    embed = model.embed.weight.detach()
-    return residual @ embed
+def compute_teach_signal(model: torch.nn.Module, logits: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
+    """
+    Approximate dL/dh where h is the hidden state before the LM head.
+    Aligns with CE(logits[:, :-1], tokens[:, 1:]) used in training.
+    """
+    logits_detached = logits.detach()
+    probs = torch.softmax(logits_detached, dim=-1)
+    target_tokens = tokens[:, 1:]
+    targets = F.one_hot(target_tokens, probs.size(-1)).float()
+    residual = probs[:, :-1] - targets  # only positions used in loss
+    denom = max(1, tokens.size(0) * max(1, tokens.size(1) - 1))
+    residual = residual / denom
+    head_weight = model.lm_head.weight.detach()
+    grad = residual @ head_weight
+    pad = torch.zeros(
+        grad.size(0),
+        1,
+        grad.size(-1),
+        device=grad.device,
+        dtype=grad.dtype,
+    )
+    return torch.cat([grad, pad], dim=1)
 
 
 def maybe_save_checkpoint(
@@ -191,20 +229,35 @@ def run_training_loop(
     dist_ctx: DistributedContext | None = None,
 ) -> Dict[str, float]:
     model = build_model_from_cfg(cfg.model).to(device)
+    train_seed = cfg.train.get("seed")
+    deterministic = cfg.train.get("deterministic", False)
+    if train_seed is not None:
+        _seed_everything(int(train_seed), deterministic=bool(deterministic))
+    model = _maybe_compile_model(model, cfg.train.get("compile"))
     if distributed:
         assert dist_ctx is not None
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[device.index],
-            output_device=device.index,
-            find_unused_parameters=True,
-        )
+        ddp_kwargs = {"find_unused_parameters": True}
+        if device.type == "cuda":
+            idx = device.index if device.index is not None else 0
+            ddp_kwargs["device_ids"] = [idx]
+            ddp_kwargs["output_device"] = idx
+        model = torch.nn.parallel.DistributedDataParallel(model, **ddp_kwargs)
         base_model = model.module
     else:
         base_model = model
 
-    dataloader, sampler = build_dataloader(cfg.data, distributed=distributed, dist_ctx=dist_ctx)
-    optimizer = torch.optim.AdamW(base_model.parameters(), lr=cfg.optim.lr)
+    seed_offset = 0
+    if train_seed is not None and dist_ctx is not None:
+        seed_offset = dist_ctx.rank
+    dataloader_seed = None if train_seed is None else int(train_seed) + seed_offset
+    dataloader, sampler = build_dataloader(
+        cfg.data,
+        distributed=distributed,
+        dist_ctx=dist_ctx,
+        seed=dataloader_seed,
+    )
+    optimizer = _build_optimizer(base_model, cfg, device=device)
+    autocast_factory = _make_autocast_factory(device, cfg.train.get("mixed_precision"))
     logger = init_logger(getattr(cfg, "logging", None), cfg)
     if distributed and dist_ctx is not None and dist_ctx.rank != 0:
         logger = NullLogger()
@@ -224,23 +277,33 @@ def run_training_loop(
             batch = next(step_iter)
         tokens = batch.to(device)
         _apply_teach_schedule(base_model, cfg, step)
-        logits = model(tokens) if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model(tokens)
-        loss = torch.nn.functional.cross_entropy(
-            logits[:, :-1].reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
-        )
+        with autocast_factory():
+            logits = model(tokens) if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model(tokens)
+            loss = torch.nn.functional.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
+            )
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(base_model.parameters(), max_norm=1.0)
         optimizer.step()
+        update_metrics: Dict[str, float] = {}
         with torch.no_grad():
             teach_signal = compute_teach_signal(base_model, logits, tokens)
+            teach_signal_norm = teach_signal.norm(dim=-1).mean().item()
             base_model(tokens, teach_signal=teach_signal)
+            if hasattr(base_model, "pop_update_metrics"):
+                update_metrics = base_model.pop_update_metrics()
         if step % log_interval == 0:
             ppl = torch.exp(loss.detach()).item()
-            logger.log({"loss": loss.item(), "ppl": ppl}, step=step)
+            metrics_payload = {"loss": loss.item(), "ppl": ppl, "teach_signal_norm": teach_signal_norm}
+            metrics_payload.update(update_metrics)
+            logger.log(metrics_payload, step=step)
             if (not distributed) or (dist_ctx and dist_ctx.rank == 0):
-                print(f"[train] step={step} loss={loss.item():.4f} ppl={ppl:.2f}")
-            metrics = {"loss": loss.item(), "ppl": ppl}
+                print(
+                    f"[train] step={step} loss={loss.item():.4f} "
+                    f"ppl={ppl:.2f} teach_norm={teach_signal_norm:.4f}"
+                )
+            metrics = metrics_payload
         maybe_save_checkpoint(
             cfg,
             base_model,
@@ -268,3 +331,183 @@ def _apply_teach_schedule(model: HOPEModel, cfg: DictConfig, step: int) -> None:
             progress = min(1.0, (step + 1 - decay_start) / decay_duration)
             scale *= max(0.0, 1.0 - progress)
     model.set_teach_runtime(scale=scale)
+
+
+def _maybe_compile_model(model: torch.nn.Module, compile_cfg: dict | None) -> torch.nn.Module:
+    if not compile_cfg or not compile_cfg.get("enable", False):
+        return model
+    kwargs = {}
+    if "mode" in compile_cfg:
+        kwargs["mode"] = compile_cfg["mode"]
+    if "backend" in compile_cfg:
+        kwargs["backend"] = compile_cfg["backend"]
+    try:
+        return torch.compile(model, **kwargs)  # type: ignore[attr-defined]
+    except Exception as err:  # pragma: no cover - compile is optional
+        if compile_cfg.get("strict", False):
+            raise
+        print(f"[compile] fallback to eager due to: {err}")
+        return model
+
+
+def _make_autocast_factory(device: torch.device, mp_cfg: dict | None):
+    if not mp_cfg or not mp_cfg.get("enabled", False):
+        return lambda: nullcontext()
+    dtype = _resolve_autocast_dtype(mp_cfg.get("dtype", "bf16"))
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+
+    def factory():
+        return torch.autocast(device_type=device_type, dtype=dtype)
+
+    return factory
+
+
+def _resolve_autocast_dtype(name: str) -> torch.dtype:
+    normalized = str(name).lower()
+    if normalized in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if normalized in {"fp16", "float16", "half"}:
+        return torch.float16
+    msg = f"Unsupported autocast dtype {name}"
+    raise ValueError(msg)
+
+
+def _build_optimizer(model: torch.nn.Module, cfg: DictConfig, *, device: torch.device) -> torch.optim.Optimizer:
+    optimizer_cfg = getattr(cfg, "optim", {})
+    optim_type = str(optimizer_cfg.get("type", "adamw")).lower()
+    if optim_type == "muon":
+        return _build_muon_optimizer(model, optimizer_cfg, device=device)
+    lr = optimizer_cfg.get("lr", 1e-3)
+    betas = optimizer_cfg.get("betas", (0.9, 0.999))
+    weight_decay = optimizer_cfg.get("weight_decay", 0.0)
+    fused_cfg = optimizer_cfg.get("fused", "auto")
+    fused = False
+    if fused_cfg == "auto":
+        fused = device.type == "cuda" and torch.cuda.is_available()
+    else:
+        fused = bool(fused_cfg)
+    kwargs = {"lr": lr, "betas": betas, "weight_decay": weight_decay}
+    if fused:
+        kwargs["fused"] = True
+    return torch.optim.AdamW(model.parameters(), **kwargs)
+
+
+def _build_muon_optimizer(model: torch.nn.Module, optimizer_cfg: DictConfig, *, device: torch.device):
+    if not hasattr(torch.optim, "Muon"):
+        raise RuntimeError("torch.optim.Muon is not available in this PyTorch build")
+    lr = optimizer_cfg.get("lr", 1e-3)
+    weight_decay = optimizer_cfg.get("weight_decay", 0.01)
+    momentum = optimizer_cfg.get("momentum", 0.95)
+    ns_coefficients = optimizer_cfg.get("ns_coefficients")
+    ns_steps = optimizer_cfg.get("ns_steps")
+    eps = optimizer_cfg.get("eps", 1e-7)
+    fused_cfg = optimizer_cfg.get("fused", "auto")
+    fused = False
+    if fused_cfg == "auto":
+        fused = device.type == "cuda" and torch.cuda.is_available()
+    else:
+        fused = bool(fused_cfg)
+    muon_params: list[torch.nn.Parameter] = []
+    adamw_params: list[torch.nn.Parameter] = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if _is_muon_candidate(name, param):
+            muon_params.append(param)
+        else:
+            adamw_params.append(param)
+    muon_kwargs = {
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "momentum": momentum,
+        "eps": eps,
+    }
+    if ns_coefficients is not None:
+        muon_kwargs["ns_coefficients"] = tuple(ns_coefficients)
+    if ns_steps is not None:
+        muon_kwargs["ns_steps"] = int(ns_steps)
+    muon_opt = torch.optim.Muon(muon_params, **muon_kwargs) if muon_params else None  # type: ignore[attr-defined]
+    adamw_kwargs = {"lr": lr, "betas": optimizer_cfg.get("betas", (0.9, 0.999)), "weight_decay": weight_decay}
+    if fused:
+        adamw_kwargs["fused"] = True
+    adamw_opt = torch.optim.AdamW(adamw_params, **adamw_kwargs) if adamw_params else None
+    return _HybridOptimizer(muon_opt, adamw_opt)
+
+
+def _is_muon_candidate(name: str, param: torch.nn.Parameter) -> bool:
+    if param.ndim < 2:
+        return False
+    lowered = name.lower()
+    if "norm" in lowered or "embed" in lowered:
+        return False
+    return True
+
+
+class _HybridOptimizer:
+    def __init__(
+        self,
+        muon_opt: torch.optim.Optimizer | None,
+        adamw_opt: torch.optim.Optimizer | None,
+    ):
+        self.muon_opt = muon_opt
+        self.adamw_opt = adamw_opt
+
+    def zero_grad(self) -> None:
+        if self.muon_opt:
+            self.muon_opt.zero_grad()
+        if self.adamw_opt:
+            self.adamw_opt.zero_grad()
+
+    def step(self) -> None:
+        if self.muon_opt:
+            self.muon_opt.step()
+        if self.adamw_opt:
+            self.adamw_opt.step()
+
+    def state_dict(self) -> dict:
+        return {
+            "muon": self.muon_opt.state_dict() if self.muon_opt else None,
+            "adamw": self.adamw_opt.state_dict() if self.adamw_opt else None,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        if self.muon_opt and state.get("muon") is not None:
+            self.muon_opt.load_state_dict(state["muon"])
+        if self.adamw_opt and state.get("adamw") is not None:
+            self.adamw_opt.load_state_dict(state["adamw"])
+
+    @property
+    def param_groups(self):
+        groups = []
+        if self.muon_opt:
+            groups.extend(self.muon_opt.param_groups)
+        if self.adamw_opt:
+            groups.extend(self.adamw_opt.param_groups)
+        return groups
+
+
+def _seed_everything(seed: int, *, deterministic: bool = False) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.benchmark = False  # type: ignore[attr-defined]
+            torch.backends.cudnn.deterministic = True  # type: ignore[attr-defined]
+    else:
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.benchmark = True  # type: ignore[attr-defined]
+            torch.backends.cudnn.deterministic = False  # type: ignore[attr-defined]
+
+
+def _make_worker_init_fn(base_seed: int):
+    def _init_fn(worker_id: int) -> None:
+        worker_seed = base_seed + worker_id
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+
+    return _init_fn

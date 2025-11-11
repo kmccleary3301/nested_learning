@@ -22,6 +22,11 @@ from nested_learning.training import (
     build_dataloader,
     build_model_from_cfg,
     compute_teach_signal,
+    _build_optimizer,
+    _make_autocast_factory,
+    _maybe_compile_model,
+    _seed_everything,
+    unwrap_config,
 )
 
 
@@ -37,6 +42,7 @@ def setup_distributed() -> DistributedContext:
 
 def build_fsdp_model(cfg: DictConfig, device: torch.device) -> tuple[FSDP, torch.nn.Module]:
     base_model = build_model_from_cfg(cfg.model).to(device)
+    base_model = _maybe_compile_model(base_model, cfg.train.get("compile"))
     fsdp_cfg = cfg.train.get("fsdp", {})
     min_params = fsdp_cfg.get("auto_wrap_min_params", 2_000_000)
     auto_wrap_policy = size_based_auto_wrap_policy(min_num_params=min_params)
@@ -96,13 +102,26 @@ def maybe_resume(cfg: DictConfig, model: FSDP, optimizer: torch.optim.Optimizer,
 
 @hydra.main(config_path="configs", config_name="hope/mid", version_base=None)
 def main(cfg: DictConfig) -> None:
+    cfg = unwrap_config(cfg)
     dist_ctx = setup_distributed()
+    train_seed = cfg.train.get("seed")
+    deterministic = cfg.train.get("deterministic", False)
+    if train_seed is not None:
+        _seed_everything(int(train_seed), deterministic=bool(deterministic))
     model, _ = build_fsdp_model(cfg, dist_ctx.device)
     inner_model = unwrap_model(model)
-    dataloader, sampler = build_dataloader(cfg.data, distributed=True, dist_ctx=dist_ctx)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.optim.lr)
+    train_seed = cfg.train.get("seed")
+    loader_seed = None if train_seed is None else int(train_seed) + dist_ctx.rank
+    dataloader, sampler = build_dataloader(
+        cfg.data,
+        distributed=True,
+        dist_ctx=dist_ctx,
+        seed=loader_seed,
+    )
+    optimizer = _build_optimizer(model, cfg, device=dist_ctx.device)
     start_step = maybe_resume(cfg, model, optimizer, dist_ctx.rank)
     logger = init_logger(getattr(cfg, "logging", None), cfg) if dist_ctx.rank == 0 else NullLogger()
+    autocast_factory = _make_autocast_factory(dist_ctx.device, cfg.train.get("mixed_precision"))
 
     steps = cfg.train.steps
     log_interval = cfg.train.get("log_interval", 10)
@@ -118,10 +137,11 @@ def main(cfg: DictConfig) -> None:
             step_iter = iter(dataloader)
             batch = next(step_iter)
         tokens = batch.to(dist_ctx.device)
-        logits = model(tokens)
-        loss = torch.nn.functional.cross_entropy(
-            logits[:, :-1].reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
-        )
+        with autocast_factory():
+            logits = model(tokens)
+            loss = torch.nn.functional.cross_entropy(
+                logits[:, :-1].reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
+            )
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

@@ -34,7 +34,14 @@ class LevelOptimizerManager:
     def should_update(self, level: str) -> bool:
         return self.clock.should_update(level)
 
-    def optimize(self, level: str, module: nn.Module, loss: torch.Tensor) -> float:
+    def optimize(
+        self,
+        level: str,
+        module: nn.Module,
+        loss: torch.Tensor,
+        *,
+        context: torch.Tensor | None = None,
+    ) -> float:
         if not self.should_update(level):
             return 0.0
         params: Tuple[torch.nn.Parameter, ...] = tuple(module.parameters())
@@ -48,7 +55,7 @@ class LevelOptimizerManager:
             for param, grad in zip(params, grads, strict=True):
                 if grad is None:
                     continue
-                update = optimizer(grad)
+                update = optimizer(grad, context=context)
                 param.add_(update, alpha=-lr)
                 total_norm += grad.norm().item()
         self.clock.record_update(level)

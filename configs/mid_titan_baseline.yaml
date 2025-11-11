@@ -57,6 +57,13 @@ train:
   steps: 220
   log_interval: 20
   device: "cuda:1"
+  seed: 451
+  deterministic: false
+  mixed_precision:
+    enabled: true
+    dtype: bf16
+  compile:
+    enable: false
   checkpoint:
     enable: true
     dir: artifacts/checkpoints/mid_titan_baseline
@@ -65,7 +72,9 @@ train:
     resume_tag: null
 
 optim:
+  type: adamw
   lr: 1.0e-5
+  fused: auto
 
 logging:
   enabled: true

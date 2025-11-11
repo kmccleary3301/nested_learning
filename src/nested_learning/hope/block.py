@@ -33,6 +33,7 @@ class HOPEBlock(nn.Module):
     def __init__(self, config: HOPEBlockConfig):
         super().__init__()
         self.config = config
+        self.last_update_stats: Dict[str, Dict[str, float]] = {}
         self.attn = SelfAttention(AttentionConfig(dim=config.dim, heads=config.heads))
         titan_config = TitanMemoryConfig(
             dim=config.dim,
@@ -90,12 +91,14 @@ class HOPEBlock(nn.Module):
             value=pooled_value.detach(),
             error_signal=pooled_error.detach(),
         )
+        context_vec = attn_out.detach().mean(dim=(0, 1))
         with torch.enable_grad():
             query = attn_out.detach().requires_grad_(True)
             target = (teach_signal.detach() + modifier.unsqueeze(1)).detach()
             prediction = self.titan_memory(query)
             loss = F.mse_loss(prediction, target)
-        self.level_manager.optimize(level_name, self.titan_memory, loss)
+        magnitude = self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
+        self.last_update_stats[f"titan.{level_name}"] = {"grad_norm": magnitude}
 
     def _update_cms(
         self,
@@ -104,14 +107,38 @@ class HOPEBlock(nn.Module):
         teach_signal: torch.Tensor,
     ) -> None:
         delta = teach_signal.detach().mean(dim=1, keepdim=True)
+        error_signals = {spec.name: delta for spec in self.config.cms_levels}
+        chunk_map = self.cms.accumulate_chunks(
+            inputs=cms_inputs,
+            outputs=cms_outputs,
+            error_signals=error_signals,
+        )
         for spec in self.config.cms_levels:
             level_name = spec.name
             if not self.level_manager.should_update(level_name):
                 continue
-            block = self.cms.blocks[level_name]
+            chunk = chunk_map.get(level_name)
+            if chunk is None:
+                continue
+            chunk_inputs, chunk_targets = chunk
             with torch.enable_grad():
-                block_input = cms_inputs[level_name].detach().requires_grad_(True)
-                target = (cms_outputs[level_name].detach() + delta).detach()
-                prediction = block(block_input)
-                loss = F.mse_loss(prediction, target)
-            self.level_manager.optimize(level_name, block, loss)
+                chunk_inp = chunk_inputs.detach().requires_grad_(True)
+                prediction = self.cms.blocks[level_name](chunk_inp)
+                loss = F.mse_loss(prediction, chunk_targets)
+            context_vec = chunk_inputs.mean(dim=(0, 1))
+            magnitude = self.level_manager.optimize(
+                level_name,
+                self.cms.blocks[level_name],
+                loss,
+                context=context_vec,
+            )
+            stats_payload = {
+                "grad_norm": magnitude,
+                "chunk_samples": float(chunk_inputs.shape[0]),
+            }
+            self.last_update_stats[f"cms.{level_name}"] = stats_payload
+
+    def pop_update_stats(self) -> Dict[str, Dict[str, float]]:
+        stats = self.last_update_stats
+        self.last_update_stats = {}
+        return stats

@@ -15,7 +15,7 @@ def test_commonsenseqa_builder() -> None:
         },
         "answerKey": "B",
     }
-    texts, target = zeroshot.build_commonsenseqa_texts(sample)
+    _, texts, target = zeroshot.build_commonsenseqa_texts(sample)
     assert len(texts) == 3
     assert target == 1
     assert "library" in texts[target]
@@ -30,7 +30,7 @@ def test_openbookqa_builder() -> None:
         },
         "answerKey": "A",
     }
-    texts, target = zeroshot.build_openbookqa_texts(sample)
+    _, texts, target = zeroshot.build_openbookqa_texts(sample)
     assert len(texts) == 4
     assert target == 0
     assert "sunlight" in texts[target]

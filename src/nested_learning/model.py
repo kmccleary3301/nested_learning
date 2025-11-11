@@ -43,6 +43,9 @@ class HOPEModel(nn.Module):
         self.blocks = nn.ModuleList([HOPEBlock(block_config) for _ in range(config.num_layers)])
         self.norm = nn.LayerNorm(config.dim)
         self.lm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
+        # Weight tying keeps the LM head gradient aligned with the embedding space.
+        self.lm_head.weight = self.embed.weight
+        self._latest_update_metrics: Dict[str, float] = {}
 
     def set_teach_runtime(self, *, scale: float | None = None, clip: float | None = None) -> None:
         if scale is not None:
@@ -67,4 +70,23 @@ class HOPEModel(nn.Module):
                     scaled_signal = scaled_signal / scale
             x = block(x, teach_signal=scaled_signal)
         x = self.norm(x)
-        return self.lm_head(x)
+        logits = self.lm_head(x)
+        if teach_signal is not None:
+            self._latest_update_metrics = self._gather_block_stats()
+        return logits
+
+    def _gather_block_stats(self) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        for idx, block in enumerate(self.blocks):
+            if hasattr(block, "pop_update_stats"):
+                stats = block.pop_update_stats()
+                for level_name, payload in stats.items():
+                    prefix = f"layer{idx}.{level_name}"
+                    for key, value in payload.items():
+                        metrics[f"{prefix}.{key}"] = value
+        return metrics
+
+    def pop_update_metrics(self) -> Dict[str, float]:
+        metrics = self._latest_update_metrics
+        self._latest_update_metrics = {}
+        return metrics

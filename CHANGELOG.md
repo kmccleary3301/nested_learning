@@ -3,7 +3,19 @@
 All notable changes to this project will be documented here. The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic versioning once tagged releases begin.
 
 ## [Unreleased]
-- Automation script to chain `uv sync → data sample → smoke train → eval`.
+### Added
+- Flash/SDPA-backed self-attention path with safe fallbacks, unlocking PyTorch 2.9 SDPA kernels by default.
+- Hydra toggles for bf16 autocast (`train.mixed_precision.*`), `torch.compile` (`train.compile.*`), and fused optimizers.
+- Muon + AdamW hybrid optimizer option exposed via `optim.type=muon`, routing ≥2D matrices through `torch.optim.Muon`.
+- Test-time memorization flags (`--memorize*`) documented in README + `docs/guide.md`, matching TITAN eval behavior.
+- Automation helpers: `scripts/run_e2e_smoke.sh` documented in Quickstart, plus new `scripts/run_cpu_ddp_smoke.sh` for CPU-only DDP/gloo smoke coverage.
+
+### Changed
+- Repository license metadata now matches the shipped Apache-2.0 text; badges updated accordingly.
+- README and guide refreshed with performance knobs, optimizer guidance, and memorization instructions so release consumers have a single source of truth.
+- Release checklist tracks the new CPU DDP smoke script to keep packaging instructions aligned with available tooling.
+
+### Upcoming
 - GitHub Actions workflow covering `ruff`, `mypy`, and `pytest`.
 - End-to-end release dry-run ahead of the `v0.1.0` tag.
 

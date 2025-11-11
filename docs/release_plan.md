@@ -16,6 +16,7 @@ Goal: Package the Nested Learning reproduction so others can run data prep, pilo
 - [x] Hydra configs for pilot/mid/target (`configs/hope/*.yaml`) referencing filtered shards.
 - [x] Training modules support single GPU, DDP, FSDP, DeepSpeed.
 - [x] Smoke configs (`configs/pilot_smoke.yaml`, `configs/mid_smoke.yaml`) for CPU verification runs.
+- [x] CPU-only DDP smoke script (`scripts/run_cpu_ddp_smoke.sh`) to validate the `gloo` backend + deterministic seeding; referenced in README/guide.
 - [x] Document logging overrides (`logging.backend=json logging.path=logs/<run>.json`) and ship sample logs in `logs/pilot_smoke.json`, `logs/mid_smoke.json`.
 - [x] Provide placeholder checkpoint (tiny random weights) in `artifacts/examples/pilot_dummy.pt` to exercise eval scripts without training.
 
@@ -29,6 +30,7 @@ Goal: Package the Nested Learning reproduction so others can run data prep, pilo
 - [x] Convert `docs/stage1_plan.md` and `docs/stage2_plan.md` highlights into `docs/guide.md` (setup → data → training → eval).
 - [x] Add `CHANGELOG.md` capturing v0.1 scope and open work (scaling to ≥500M, full corpus ingestion).
 - [x] README badges (tests passing, python version, license) and quickstart snippet.
+- [x] README + `docs/guide.md` cover performance toggles (`train.mixed_precision`, `train.compile`, Muon optimizers) and memorization flags so release consumers can reproduce planner critiques.
 - [ ] `CONTRIBUTING.md` with TODO list and instructions for filing issues/PRs.
 
 ## 5. Automation
@@ -49,6 +51,7 @@ Goal: Package the Nested Learning reproduction so others can run data prep, pilo
 
 **Release procedure draft (v0.1.0)**
 1. Start from a clean working tree (fresh clone recommended), then run `uv run bash scripts/run_e2e_smoke.sh DEVICE=cpu`.
-2. Verify outputs: checkpoint under `artifacts/checkpoints/pilot_smoke`, logs under `logs/`, eval metrics under `eval/`.
-3. Update `CHANGELOG.md` with final notes, confirm `docs/release_plan.md` all required items checked.
-4. Tag `v0.1.0` and publish release notes summarizing capabilities, hardware assumptions, and next-step roadmap.
+2. Run `uv run bash scripts/run_cpu_ddp_smoke.sh` to ensure the CPU DDP/gloo path remains functional for contributors without GPUs.
+3. Verify outputs: checkpoint under `artifacts/checkpoints/pilot_smoke`, logs under `logs/`, eval metrics under `eval/`.
+4. Update `CHANGELOG.md` with final notes, confirm `docs/release_plan.md` all required items checked.
+5. Tag `v0.1.0` and publish release notes summarizing capabilities, hardware assumptions, and next-step roadmap.

@@ -62,6 +62,24 @@ At this early stage both models perform similarly on the short zero-shot probe, 
   - Evaluations: `eval/zeroshot_mid_stage2_smoke.json`, `eval/niah_mid_stage2_smoke.json`, `eval/continual_mid_stage2_smoke.json`
 - These artifacts prove the distributed training/eval wiring and should accompany PRs before moving to the heavier config.
 
+### 2.3 Pilot-scale run (3 B tokens, single GPU)
+- Config: `configs/pilot.yaml` (dim = 512, 12 layers, teach_scale 0.10, CMS fast/mid/slow/ultra).
+- Target: 246 667 steps @ batch 6 × seq 2048 ≈ 3.03 B tokens on `cuda:1`.
+- Command (tmux `pilot_train`):
+  ```bash
+  tmux new -s pilot_train "cd /mnt/drive_4/research/nested_learning && \
+    set -a && source git.env && set +a && \
+    export UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=copy && \
+    uv run python train.py --config-name pilot \
+      logging.enabled=true logging.backend=wandb \
+      logging.project=nested-learning logging.run_name=pilot-main-$(date +%Y%m%d%H%M%S) \
+      train.device=cuda:1"
+  ```
+- Current run: `pilot-main-20251111161514` (W&B link `https://wandb.ai/lsu-kmccleary-0/nested-learning/runs/oy73f2m6`) has cleared step 150, consuming ~19 GB VRAM after reducing batch size to 6. Loss decreased from 93 → 40 in the first ~3 minutes.
+- Checkpoints land in `artifacts/checkpoints/pilot/step_*.pt` every 1 000 steps. `artifacts/pilot_release/` now contains a README + `metadata.json` stub so the final checkpoint/config/log/eval bundle can be published without hunting through the tree.
+- ETA: ~52 hours wall clock at 0.75–0.8 s/step. Plan to capture interim checkpoints (e.g., step 32k, 64k) if early evaluations are needed.
+- Eval dry runs: zero-shot, NIAH (2048/4096), and continual scripts were executed against `artifacts/examples/pilot_dummy.pt` to confirm the memorization flags and state-dict compatibility before the real pilot checkpoint completes. Outputs live under `eval/zeroshot_pilot_dummy_piqa.json`, `eval/niah_dummy.json`, `eval/continual_dummy.json`.
+
 ## 3. Recommended Workflow for Contributors
 1. **Environment** – `uv sync --all-extras && uv run bash scripts/data/run_sample.sh`
 2. **Distributed smoke** – `uv run torchrun --nproc_per_node=2 train_dist.py --config-name mid_stage2_smoke`
@@ -69,7 +87,7 @@ At this early stage both models perform similarly on the short zero-shot probe, 
 4. **Scaling** – Attach tmux sessions for long jobs:
    - Data: `tmux new -s data_full '... run_full.sh'`
    - Mid-scale: `tmux new -s mid_stage2_run '... torchrun ... mid_stage2'`
-5. **Artifacts** – Drop new checkpoints/logs in `artifacts/checkpoints/mid_stage2*`, `logs/`, and store eval JSON under `eval/` with descriptive names.
+5. **Artifacts** – Drop new checkpoints/logs in `artifacts/checkpoints/mid_stage2*`, `logs/`, and store eval JSON under `eval/` with descriptive names. For long pilot runs, copy the resulting checkpoint + config + eval outputs into `artifacts/pilot_release/` so users can download a single bundle.
 
 Documenting these steps here keeps everyone aligned while we chase full Stage 2 parity.
 
@@ -78,11 +96,13 @@ Documenting these steps here keeps everyone aligned while we chase full Stage 
 1. `uv sync --all-extras`
 2. `uv run bash scripts/data/run_sample.sh` *(for quick validation; swap in `run_full.sh` when storage allows).*
 3. `uv run bash scripts/run_smoke.sh pilot`
-4. `uv run torchrun --nproc_per_node=2 train_dist.py --config-name mid_stage2_smoke`
-5. `uv run python scripts/eval/zeroshot.py --config configs/mid_stage2_smoke.yaml --checkpoint artifacts/checkpoints/mid_stage2_smoke/step_000060.pt --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --tasks piqa,hellaswag,winogrande,arc_easy,arc_challenge,boolq,siqa --max-samples 64 --device cuda:1`
-6. `uv run python scripts/eval/niah.py --config configs/mid_stage2_smoke.yaml --checkpoint artifacts/checkpoints/mid_stage2_smoke/step_000060.pt --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --context-lengths 2048 --samples-per-length 5 --device cuda:1`
-7. `uv run python scripts/eval/continual.py --config configs/mid_stage2_smoke.yaml --checkpoints artifacts/checkpoints/mid_stage2_smoke/step_000060.pt --segments-yaml configs/data/continual_segments_sample.yaml --batch-size 4 --max-batches 5 --device cuda:1`
-8. (Optional) Run `tmux new -s mid_stage2_run '... mid_stage2'` to produce the 100-step mid checkpoint + evals cited above.
+4. `uv run bash scripts/run_cpu_ddp_smoke.sh` *(ensures gloo backend determinism for contributors without GPUs).*
+5. `uv run bash scripts/run_e2e_smoke.sh` *(sync → sample data → pilot smoke → PIQA eval).*
+6. `uv run torchrun --nproc_per_node=2 train_dist.py --config-name mid_stage2_smoke`
+7. `uv run python scripts/eval/zeroshot.py --config configs/mid_stage2_smoke.yaml --checkpoint artifacts/checkpoints/mid_stage2_smoke/step_000060.pt --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --tasks piqa,hellaswag,winogrande,arc_easy,arc_challenge,boolq,siqa --max-samples 64 --device cuda:1 --memorize --memorize-steps 2 --memorize-use-correct-answer`
+8. `uv run python scripts/eval/niah.py --config configs/mid_stage2_smoke.yaml --checkpoint artifacts/checkpoints/mid_stage2_smoke/step_000060.pt --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --context-lengths 2048 --context-lengths 4096 --context-lengths 8192 --samples-per-length 5 --device cuda:1`
+9. `uv run python scripts/eval/continual.py --config configs/mid_stage2_smoke.yaml --checkpoints artifacts/checkpoints/mid_stage2_smoke/step_000060.pt --segments-yaml configs/data/continual_segments_sample.yaml --batch-size 4 --max-batches 5 --device cuda:1 --memorize --memorize-steps 1`
+10. (Optional) Run `tmux new -s mid_stage2_run '... mid_stage2'` to produce the 100-step mid checkpoint + evals cited above, then start the long pilot run via `tmux new -s pilot_train ...`.
 - **Teach-scale sweep (single GPU, batch 4, 40 steps)**  
   | teach_scale | clip | final loss | checkpoint | log |
   |-------------|------|------------|------------|-----|
