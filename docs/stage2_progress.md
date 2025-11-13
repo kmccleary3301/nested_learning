@@ -65,6 +65,7 @@ At this early stage both models perform similarly on the short zero-shot probe, 
 -### 2.3 Pilot-scale run (3 B tokens, single GPU)
 - Config: `configs/pilot.yaml` (dim 512, 12 layers, teach_scale 0.10, CMS fast/mid/slow/ultra). Batch 6 × seq 2048 → ≈3.03 B tokens at 246 667 steps.
 - **Short-run snapshot:** A 9 000-step job (W&B `pilot-short-20251111184315`) produced checkpoints every 500 steps and a release bundle at `artifacts/pilot_release/` (includes PIQA/NIAH/continual JSONs). Loss dropped from 93 → 18 by step 600; PIQA accuracy at 128 samples is 0.5625.
+- **Long-run checkpoint:** `tmux pilot_full` has reached ~22 k steps (checkpoint `artifacts/checkpoints/pilot/step_022000.pt`). Eval JSONs live at `eval/zeroshot_pilot_step22000.json`, `eval/niah_pilot_step22000.json`, `eval/continual_pilot_step22000.json`.
 - **Full run plan:** Resume the long tmux job once TITAN baseline finishes:
   ```bash
   tmux new -s pilot_full "cd /mnt/drive_4/research/nested_learning && \

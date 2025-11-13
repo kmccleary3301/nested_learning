@@ -56,8 +56,8 @@ All outputs are copied to `artifacts/pilot_release/` via `scripts/package_pilot_
 ## 7. Upcoming experiments queue
 | ID | Variant | Command seed | Notes |
 |----|---------|--------------|-------|
-| Q1 | TITAN baseline (9k steps) | `uv run python train.py --config-name mid_titan_baseline ... train.steps=9000` | Running now on `cuda:1`; package results + run eval suite once complete. |
-| Q2 | Pilot long run (3 B tokens) | `tmux new -s pilot_full "... train.steps=246667 train.checkpoint.save_interval=1000"` | Resume immediately after Q1 to accumulate 3 B tokens; snapshot every 25k steps. |
+| Q1 | TITAN baseline (9k steps) | `uv run python train.py --config-name mid_titan_baseline ... train.steps=9000` | ✅ W&B `titan-short-20251112195149`; metrics stored as `eval/*_titan.json`. |
+| Q2 | Pilot long run (3 B tokens) | `tmux new -s pilot_full "... train.steps=246667 train.checkpoint.save_interval=1000"` | 🔄 In progress (step ≈22k); snapshot every 25k steps. |
 | Q3 | Teach-scale ablation | `+model.teach_scale=0.05/0.15` (pilot config) | Run 2 k-step jobs to quantify stability vs accuracy. |
 | Q4 | CMS chunk toggle | `+model.cms_levels[].update_period=1` (Transformer-like) | Compare zero-shot/NIAH vs default chunking. |
 | Q5 | Muon vs AdamW | `optim.type=muon` vs `adamw` | Use 5 k-step runs, document speed/quality in `docs/experiments_report.md`. |

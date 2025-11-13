@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/pilot_release/checkpoint.pt",
+    "segment_losses": {
+      "refinedweb_2018": 47.07892000978474,
+      "wikipedia_sample": 45.77716793052838,
+      "c4_sample": 46.112149889921724,
+      "redpajama_sample": 46.673732570939336
+    }
+  }
+]
