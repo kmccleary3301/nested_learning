@@ -63,22 +63,20 @@ At this early stage both models perform similarly on the short zero-shot probe, 
 - These artifacts prove the distributed training/eval wiring and should accompany PRs before moving to the heavier config.
 
 ### 2.3 Pilot-scale run (3 B tokens, single GPU)
-- Config: `configs/pilot.yaml` (dim = 512, 12 layers, teach_scale 0.10, CMS fast/mid/slow/ultra).
-- Target: 246 667 steps @ batch 6 × seq 2048 ≈ 3.03 B tokens on `cuda:1`.
-- Command (tmux `pilot_train`):
+- Config: `configs/pilot.yaml` (dim 512, 12 layers, teach_scale 0.10, CMS fast/mid/slow/ultra). Batch 6 × seq 2048 → ≈3.03 B tokens at 246 667 steps.
+- **Short-run snapshot:** A 9 000-step job (W&B `pilot-short-20251111184315`) produced checkpoints every 500 steps and a release bundle at `artifacts/pilot_release/` (includes PIQA/NIAH/continual JSONs). Loss dropped from 93 → 18 by step 600; PIQA accuracy at 128 samples is 0.5625.
+- **Full run plan:** Resume the long tmux job once TITAN baseline finishes:
   ```bash
-  tmux new -s pilot_train "cd /mnt/drive_4/research/nested_learning && \
+  tmux new -s pilot_full "cd /mnt/drive_4/research/nested_learning && \
     set -a && source git.env && set +a && \
     export UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=copy && \
     uv run python train.py --config-name pilot \
       logging.enabled=true logging.backend=wandb \
-      logging.project=nested-learning logging.run_name=pilot-main-$(date +%Y%m%d%H%M%S) \
-      train.device=cuda:1"
+      +logging.project=nested-learning +logging.run_name=pilot-main-$(date +%Y%m%d%H%M%S) \
+      train.device=cuda:1 train.steps=246667 train.checkpoint.save_interval=1000"
   ```
-- Current run: `pilot-main-20251111161514` (W&B link `https://wandb.ai/lsu-kmccleary-0/nested-learning/runs/oy73f2m6`) has cleared step 150, consuming ~19 GB VRAM after reducing batch size to 6. Loss decreased from 93 → 40 in the first ~3 minutes.
-- Checkpoints land in `artifacts/checkpoints/pilot/step_*.pt` every 1 000 steps. `artifacts/pilot_release/` now contains a README + `metadata.json` stub so the final checkpoint/config/log/eval bundle can be published without hunting through the tree.
-- ETA: ~52 hours wall clock at 0.75–0.8 s/step. Plan to capture interim checkpoints (e.g., step 32k, 64k) if early evaluations are needed.
-- Eval dry runs: zero-shot, NIAH (2048/4096), and continual scripts were executed against `artifacts/examples/pilot_dummy.pt` to confirm the memorization flags and state-dict compatibility before the real pilot checkpoint completes. Outputs live under `eval/zeroshot_pilot_dummy_piqa.json`, `eval/niah_dummy.json`, `eval/continual_dummy.json`.
+- Eval automation: `scripts/eval/run_pilot_suite.sh` now stitches zero-shot/NIAH/continual runs so we can refresh metrics whenever a new checkpoint is packaged.
+- Next: keep `scripts/package_pilot_release.sh` in the tmux workflow (every 25k steps) and mirror the workflow for the TITAN baseline to establish direct comparisons.
 
 ## 3. Recommended Workflow for Contributors
 1. **Environment** – `uv sync --all-extras && uv run bash scripts/data/run_sample.sh`

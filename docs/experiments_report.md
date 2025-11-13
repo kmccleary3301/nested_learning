@@ -103,13 +103,18 @@ Pilot PIQA example (32-sample subset, single GPU):
 
 At this scale, memorization neither helps nor hurts, but the infrastructure is in place to replicate the substantial gains reported in HOPE/TITAN once longer contexts and richer checkpoints are available.
 
-### 3.6 Pilot (3 B tokens) – in progress
-- **Config:** `configs/pilot.yaml` (dim = 512, 12 layers, TITAN + CMS fast/mid/slow/ultra, teach_schedule warmup 2k → decay 120k→140k).
-- **Run target:** 246 667 steps (batch 6 × seq 2048 ≈ 3.03 B tokens) on `cuda:1`, lr = 2.5e‑4 AdamW + Muon option disabled for parity with Stage 1.
-- **Logging:** W&B project `nested-learning`, run `pilot-main-20251111161514` (`https://wandb.ai/lsu-kmccleary-0/nested-learning/runs/oy73f2m6`). Local console mirrors under `wandb/run-*/files/output.log`.
-- **Status:** Step 150 reached with loss dropping from 93.4 → 40.2. Estimated wall-clock ≈52 hours for full 3 B tokens. Checkpoints saved every 1 000 steps to `artifacts/checkpoints/pilot/`.
-- **Packaging:** `artifacts/pilot_release/` now contains a manifest stub (`metadata.json`, README) so the eventual checkpoint, config, logs, and eval outputs can be bundled for contributors without rerunning the long job.
-- **Eval prep:** Zero-shot, NIAH (up to 64 k contexts), and continual-learning scripts were dry-run against the sample `artifacts/examples/pilot_dummy.pt` checkpoint to confirm the new memorization/compatibility flows before the real pilot weights land.
+-### 3.6 Pilot (3 B tokens) – short-run snapshot
+- **Config:** `configs/pilot.yaml` (dim 512, 12 layers, TITAN + CMS fast/mid/slow/ultra, teach_schedule warmup 2k → decay 120k→140k).
+- **Short run:** Completed a 9 000-step pass (≈55 M tokens) on `cuda:1` with checkpoints every 500 steps. Latest bundle: `artifacts/pilot_release/step_009000.pt`.
+- **Metrics (memorization enabled):**
+  | Eval | Result |
+  |------|--------|
+  | PIQA (128 samples) | 0.5625 accuracy |
+  | NIAH (2k/4k/8k contexts, 2 samples each) | 0.0 |
+  | Continual (sample segments, 2 batches) | CE losses 35–43 |
+- **Status:** Loss curves continue to fall through step 9000 (93 → 18). Full 3 B-token run will resume in a dedicated tmux session once baseline comparisons finish; ETA remains ≈52 hours wall clock.
+- **Packaging:** `artifacts/pilot_release/` contains checkpoint, config, logs, metadata, and eval JSONs so contributors can download the snapshot without rerunning the job.
+- **Next:** Restart the long pilot run (246 667 steps) and mirror the same workflow for the TITAN baseline to fill the comparison tables below.
 
 ---
 
