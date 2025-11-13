@@ -107,14 +107,14 @@ At this scale, memorization neither helps nor hurts, but the infrastructure is i
 - **Config:** `configs/pilot.yaml` (dim 512, 12 layers, TITAN + CMS fast/mid/slow/ultra, teach_schedule warmup 2k → decay 120k→140k).
 - **Short run:** Completed a 9 000-step pass (≈55 M tokens) on `cuda:1` with checkpoints every 500 steps. Latest bundle: `artifacts/pilot_release/step_009000.pt`.
 - **Metrics (memorization enabled):**
-  | Eval | Result |
-  |------|--------|
-  | PIQA (128 samples) | 0.5625 accuracy |
-  | NIAH (2k/4k/8k contexts, 2 samples each) | 0.0 |
-  | Continual (sample segments, 2 batches) | CE losses 35–43 |
-- **Status:** Loss curves continue to fall through step 9000 (93 → 18). Full 3 B-token run will resume in a dedicated tmux session once baseline comparisons finish; ETA remains ≈52 hours wall clock.
-- **Packaging:** `artifacts/pilot_release/` contains checkpoint, config, logs, metadata, and eval JSONs so contributors can download the snapshot without rerunning the job.
-- **Next:** Restart the long pilot run (246 667 steps) and mirror the same workflow for the TITAN baseline to fill the comparison tables below.
+  | Eval | HOPE (step 9000) | TITAN (step 9000) |
+  |------|------------------|------------------|
+  | PIQA (128 samples) | **0.5625** | 0.4922 |
+  | NIAH (2k/4k/8k contexts, 2 samples each) | 0.0 / 0.0 / 0.0 | 0.5 / 0.5 / 0.5 |
+  | Continual (sample segments, 2 batches) | CE ≈ 35–43 | CE ≈ 12–14 |
+- **Status:** HOPE loss drops from 93 → 18 by step 9000, while TITAN’s continual losses fall faster but lag on PIQA. Neither model shows long-context recall yet.
+- **Packaging:** `artifacts/pilot_release/` contains both checkpoints, configs, logs, metadata, and eval JSONs so contributors can download the snapshots.
+- **Next:** Keep the long HOPE run alive (`tmux pilot_full`) and schedule larger TITAN runs plus ablations (teach-scale, CMS toggles, Muon vs AdamW) to populate the comparison tables once we pass the 25k-step mark.
 
 ---
 

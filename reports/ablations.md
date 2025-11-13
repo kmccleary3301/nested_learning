@@ -63,3 +63,12 @@ All outputs are copied to `artifacts/pilot_release/` via `scripts/package_pilot_
 | Q5 | Muon vs AdamW | `optim.type=muon` vs `adamw` | Use 5 k-step runs, document speed/quality in `docs/experiments_report.md`. |
 
 Mark each queue item ✅/⏳/⚠️ as it progresses so we know which ablations have data ready for reporting.
+
+## 8. Baseline comparison (step 9000, memorization on)
+| Metric | HOPE | TITAN |
+|--------|------|-------|
+| PIQA (128 samples) | 0.5625 | 0.4922 |
+| NIAH 2k / 4k / 8k | 0.0 / 0.0 / 0.0 | 0.5 / 0.5 / 0.5 |
+| Continual CE (RefinedWeb / Wiki / C4 / RPJ) | 35.3 / 36.1 / 37.0 / 42.9 | 12.9 / 11.9 / 12.3 / 13.8 |
+
+Use these values as the “before” column when logging future ablations (e.g., teach-scale sweeps). Update the table whenever a longer checkpoint is evaluated.

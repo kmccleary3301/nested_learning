@@ -62,7 +62,7 @@ At this early stage both models perform similarly on the short zero-shot probe, 
   - Evaluations: `eval/zeroshot_mid_stage2_smoke.json`, `eval/niah_mid_stage2_smoke.json`, `eval/continual_mid_stage2_smoke.json`
 - These artifacts prove the distributed training/eval wiring and should accompany PRs before moving to the heavier config.
 
-### 2.3 Pilot-scale run (3 B tokens, single GPU)
+-### 2.3 Pilot-scale run (3 B tokens, single GPU)
 - Config: `configs/pilot.yaml` (dim 512, 12 layers, teach_scale 0.10, CMS fast/mid/slow/ultra). Batch 6 × seq 2048 → ≈3.03 B tokens at 246 667 steps.
 - **Short-run snapshot:** A 9 000-step job (W&B `pilot-short-20251111184315`) produced checkpoints every 500 steps and a release bundle at `artifacts/pilot_release/` (includes PIQA/NIAH/continual JSONs). Loss dropped from 93 → 18 by step 600; PIQA accuracy at 128 samples is 0.5625.
 - **Full run plan:** Resume the long tmux job once TITAN baseline finishes:
@@ -77,6 +77,12 @@ At this early stage both models perform similarly on the short zero-shot probe, 
   ```
 - Eval automation: `scripts/eval/run_pilot_suite.sh` now stitches zero-shot/NIAH/continual runs so we can refresh metrics whenever a new checkpoint is packaged.
 - Next: keep `scripts/package_pilot_release.sh` in the tmux workflow (every 25k steps) and mirror the workflow for the TITAN baseline to establish direct comparisons.
+
+### 2.4 TITAN baseline (short run)
+- Config: `configs/mid_titan_baseline.yaml` (TITAN-only stack, same teach schedule/optimizer as pilot).
+- **Short-run snapshot:** 9 000 steps on `cuda:1` with checkpoints every 500 steps (`artifacts/checkpoints/mid_titan_baseline/step_009000.pt`). PIQA = 0.4922, NIAH (2k/4k/8k) = 0.5, continual CE ≈ 12–14.
+- Bundle: copied into `artifacts/pilot_release/` alongside the HOPE checkpoint so both models share the same manifest/eval files.
+- Next: schedule a longer TITAN run (≥25 k steps) once HOPE reaches its next checkpoint so we can compare beyond the short-run regime and begin ablation sweeps (teach-scale, CMS toggles, Muon vs AdamW).
 
 ## 3. Recommended Workflow for Contributors
 1. **Environment** – `uv sync --all-extras && uv run bash scripts/data/run_sample.sh`
