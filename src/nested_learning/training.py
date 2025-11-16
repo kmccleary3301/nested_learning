@@ -39,6 +39,8 @@ def unwrap_config(cfg: DictConfig) -> DictConfig:
         return cfg
     if "hope" in cfg:
         return cfg.hope
+    if "ablations" in cfg:
+        return cfg.ablations
     return cfg
 
 

@@ -62,28 +62,65 @@ At this early stage both models perform similarly on the short zero-shot probe, 
   - Evaluations: `eval/zeroshot_mid_stage2_smoke.json`, `eval/niah_mid_stage2_smoke.json`, `eval/continual_mid_stage2_smoke.json`
 - These artifacts prove the distributed training/eval wiring and should accompany PRs before moving to the heavier config.
 
--### 2.3 Pilot-scale run (3 B tokens, single GPU)
-- Config: `configs/pilot.yaml` (dim 512, 12 layers, teach_scale 0.10, CMS fast/mid/slow/ultra). Batch 6 × seq 2048 → ≈3.03 B tokens at 246 667 steps.
-- **Short-run snapshot:** A 9 000-step job (W&B `pilot-short-20251111184315`) produced checkpoints every 500 steps and a release bundle at `artifacts/pilot_release/` (includes PIQA/NIAH/continual JSONs). Loss dropped from 93 → 18 by step 600; PIQA accuracy at 128 samples is 0.5625.
-- **Long-run checkpoint:** `tmux pilot_full` has reached ~22 k steps (checkpoint `artifacts/checkpoints/pilot/step_022000.pt`). Eval JSONs live at `eval/zeroshot_pilot_step22000.json`, `eval/niah_pilot_step22000.json`, `eval/continual_pilot_step22000.json`.
-- **Full run plan:** Resume the long tmux job once TITAN baseline finishes:
-  ```bash
-  tmux new -s pilot_full "cd /mnt/drive_4/research/nested_learning && \
-    set -a && source git.env && set +a && \
-    export UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=copy && \
-    uv run python train.py --config-name pilot \
-      logging.enabled=true logging.backend=wandb \
-      +logging.project=nested-learning +logging.run_name=pilot-main-$(date +%Y%m%d%H%M%S) \
-      train.device=cuda:1 train.steps=246667 train.checkpoint.save_interval=1000"
-  ```
-- Eval automation: `scripts/eval/run_pilot_suite.sh` now stitches zero-shot/NIAH/continual runs so we can refresh metrics whenever a new checkpoint is packaged.
-- Next: keep `scripts/package_pilot_release.sh` in the tmux workflow (every 25k steps) and mirror the workflow for the TITAN baseline to establish direct comparisons.
+### 2.3 Pilot-scale run (3 B tokens, single GPU)
+- Config: `configs/pilot.yaml` (dim 512, 12 layers, teach_scale 0.10, CMS fast/mid/slow/ultra). Batch 6 × seq 2048 for a 3.03 B-token target at 246 667 steps; runs on `cuda:1` with Muon optimizer + bf16 autocast/SDPA/`torch.compile`.
+- **Long-run status (13 Nov):** Main tmux job (`pilot_full`) advanced to step 246 667 before pausing; checkpoints live under `artifacts/checkpoints/pilot/step_*.pt`. We standardize on step 230 000 (`artifacts/checkpoints/pilot/step_230000.pt`) for the release drop because its metrics stabilized and it precedes the LR cooldown.
+- **Release packaging:** `scripts/package_pilot_release.sh artifacts/checkpoints/pilot/step_230000.pt` now copies the checkpoint to `artifacts/pilot_release/checkpoint.pt`, syncs `config.yaml`, and refreshes `MANIFEST.txt`/`metadata.json`. The bundle also carries tmux logs plus TITAN baselines so downstream users can download a single directory.
+- **Eval refresh:** Re-ran the suite with memorization enabled (device `cuda:1`) which writes:
+  - `eval/zeroshot_pilot_step230000.json` (PIQA 0.496 @256, HellaSwag 0.297, Winogrande 0.473, ARC-E 0.285, ARC-C 0.234, BoolQ 0.367, SIQA 0.316, CSQA 0.180, OpenBookQA 0.113).
+  - `eval/niah_pilot_step230000.json` (0.625 @2k → 0.50 @65k context lengths).
+  - `eval/continual_pilot_step230000.json` (CE ≈8.06/7.79/7.68/7.95 on RefinedWeb/Wiki/C4/RedPajama segments).
+  Copies of these JSONs now sit inside `artifacts/pilot_release/` next to the historical step 22k dumps for comparison.
+- **Automation:** `scripts/eval/run_pilot_suite.sh` will pick up the latest checkpoint automatically; override `HOPE_CHECKPOINT=artifacts/checkpoints/pilot/step_230000.pt` to re-run exactly this snapshot.
+- **Next:** Keep checkpoints under version control (ignored by git) for ablations (teach-scale, CMS chunking, optimizer swaps) while TITAN catches up to a comparable step count.
 
-### 2.4 TITAN baseline (short run)
+### 2.4 TITAN baseline (short + long runs)
 - Config: `configs/mid_titan_baseline.yaml` (TITAN-only stack, same teach schedule/optimizer as pilot).
 - **Short-run snapshot:** 9 000 steps on `cuda:1` with checkpoints every 500 steps (`artifacts/checkpoints/mid_titan_baseline/step_009000.pt`). PIQA = 0.4922, NIAH (2k/4k/8k) = 0.5, continual CE ≈ 12–14.
 - Bundle: copied into `artifacts/pilot_release/` alongside the HOPE checkpoint so both models share the same manifest/eval files.
-- Next: schedule a longer TITAN run (≥25 k steps) once HOPE reaches its next checkpoint so we can compare beyond the short-run regime and begin ablation sweeps (teach-scale, CMS toggles, Muon vs AdamW).
+- **Long run complete (13 Nov, GPU 0):** After fixing `/tmp` exhaustion via `TMPDIR=/mnt/drive_4/tmp_titan`, the 25 k-step job finished cleanly (W&B `titan-long-20251113192738`). Final checkpoint: `artifacts/checkpoints/mid_titan_baseline/step_025000.pt` (also copied to `artifacts/pilot_release/titan_step_025000.pt`).
+- **Eval suite:** `eval/zeroshot_titan_step25000.json` (PIQA 0.484, HellaSwag 0.293, Winogrande 0.480, ARC-E 0.281, ARC-C 0.250, BoolQ 0.398, SIQA 0.293, CSQA 0.188, OBQA 0.145), `eval/niah_titan_step25000.json` (0.50/0.625/0.125/0.75/0.50/0.125 across 2 k→65 k contexts), and `eval/continual_titan_step25000.json` (CE ≈8.36/8.12/7.85/8.11). Copies live in `artifacts/pilot_release/` for download.
+- Next: Use the Titan step 25 k metrics as the baseline in `docs/experiments_report.md`/`reports/ablations.md` and start the planned ablations (teach-scale, CMS chunking, optimizer swaps) against the HOPE checkpoint tree.
+
+### 2.5 Teach-scale ablations (pilot)
+- **teach_scale=0.05 (GPU 0, 2 k steps):** Checkpoints at `artifacts/checkpoints/pilot_teach05/step_{001000,002000}.pt`, log `logs/pilot-teach05-20251114010549.json`. Evals show PIQA 0.453 / HellaSwag 0.273 / Winogrande 0.508, NIAH 0.50→1.00 across 2k→65k, and continual CE ≈37–33.
+- **teach_scale=0.05 long (GPU 1, 25 k steps):** Checkpoints under `artifacts/checkpoints/pilot_teach05_long/`, log `logs/pilot-teach05-long-20251114155521.json`. Evals: `zeroshot_pilot_teach05_long_step25000.json` (PIQA 0.508, ARC-E 0.320, etc.), `niah_pilot_teach05_long_step25000.json` (0.25 / 0.50 / 0.375 / 0.75 / 0.75 / 0.75), `continual_pilot_teach05_long_step25000.json` (CE ≈52 / 49 / 49 / 51).
+- **teach_scale=0.15 (GPU 1, 2 k steps):** Checkpoints at `artifacts/checkpoints/pilot_teach15/step_{001000,002000}.pt`, log `logs/pilot-teach15-20251114012109.json`. Evals: PIQA 0.484 / HellaSwag 0.258 / Winogrande 0.461, NIAH scores 0.75/0.75/0.75/0.50/0.25/0.50, continual CE ≈69–66 (expected because the run only saw 2 k steps).
+- **teach_scale=0.15 long (GPU 1, 25 k steps):** Checkpoints under `artifacts/checkpoints/pilot_teach15_long/`, log `logs/pilot-teach15-long-20251114185448.json`. Evals: `zeroshot_pilot_teach15_long_step25000.json` (PIQA 0.496, HellaSwag 0.305, Winogrande 0.500), `niah_pilot_teach15_long_step25000.json` (0.75 / 0.625 / 0.375 / 0.75 / 0.50 / 0.75), `continual_pilot_teach15_long_step25000.json` (CE ≈7.9 / 7.6 / 7.6 / 7.8).
+- Takeaway: 0.05 offers modest long-context gains but hurts continual even after a long run, while 0.15 regains solid continual metrics and competitive zero-shot scores, so the mid/high teach scales remain the most promising defaults.
+
+### 2.6 CMS chunk ablation (update_period=1)
+- **Run:** `pilot-cms-nochunk-20251114232720` on GPU 1 (5 k steps) with all CMS levels forced to `update_period=1` (no chunk accumulation).
+- **Artifacts:** Checkpoints `artifacts/checkpoints/pilot_cms_nochunk/step_*.pt`, JSON log `logs/pilot-cms-nochunk-20251114232720.json`.
+- **Evals:** `zeroshot_pilot_cms_nochunk_step5000.json` (PIQA 0.520, HellaSwag 0.277, Winogrande 0.473, BoolQ 0.633, etc.), `niah_pilot_cms_nochunk_step5000.json` (0.75 / 0.25 / 0.25 / 0.25 / 0.75 / 0.50), `continual_pilot_cms_nochunk_step5000.json` (CE ≈46.6 / 47.8 / 49.7 / 52.1).
+- Takeaway: removing chunk accumulation boosts some zero-shot scores (e.g., BoolQ) but causes significant continual-learning degradation, reinforcing the need for chunked CMS updates.
+
+### 2.7 Self-modifier ablation (self_mod_lr=0)
+- **Run:** `pilot-selfmod-off-20251115132848` on GPU 1 (5 k steps) with `model.self_mod_lr=0`.
+- **Artifacts:** Checkpoints `artifacts/checkpoints/pilot_selfmod_off/step_*.pt`, JSON log `logs/pilot-selfmod-off-20251115132848.json`.
+- **Evals:** `zeroshot_pilot_selfmod_off_step5000.json` (PIQA 0.516, BoolQ 0.633, etc.), `niah_pilot_selfmod_off_step5000.json` (0.75 / 0.75 / 0.50 / 0.75 / 0.25 / 0.75), `continual_pilot_selfmod_off_step5000.json` (CE ≈45.7 / 44.9 / 44.4 / 45.5).
+- Takeaway: turning off the self-modifier leaves zero-shot performance roughly flat but dramatically worsens continual losses, matching the paper’s claim that test-time modulation is necessary for HOPE’s continual-learning behaviour.
+
+### 2.8 CMS sparse-chunk ablation (periods 8→512)
+- **Goal:** Stress-test Eq. 31’s chunk accumulation at extreme update periods without blowing GPU memory.
+- **Config:** `configs/ablations/cms_sparse.yaml` (dim 384, 8 layers, seq 1024, batch 2, CMS hidden multiplier = 2, update periods 8/32/128/512). Exported resolved copy for evals at `configs/resolved/cms_sparse_eval.yaml`.
+- **Run:** `pilot-cms-sparse-20251115165307` (5 k steps, GPU 1) with `PYTORCH_ALLOC_CONF=expandable_segments:True`.
+- **Artifacts:** `artifacts/checkpoints/pilot_cms_sparse/step_005000.pt`, logs `logs/pilot_cms_sparse_metrics_{run}.json`.
+- **Evals:** `zeroshot_pilot_cms_sparse_step5000.json` (PIQA 0.516, BoolQ 0.367, HellaSwag 0.258, Winogrande 0.500), `niah_pilot_cms_sparse_step5000.json` (0.75 / 0.50 / 0.625 / 0.625 / 0.50 / 0.375), `continual_pilot_cms_sparse_step5000.json` (CE ≈25.0 across the four segments).
+- **Takeaway:** Increasing chunk size to 512 preserves zero-shot accuracy similar to the default chunked run but slashes continual loss relative to the no-chunk variant (~25 CE vs. high-40s), reinforcing that chunk accumulation + sparse updates are vital to HOPE’s continual-learning claims. Memory pressure is manageable (<42 GB) with the downsized configuration.
+
+### 2.9 Optimizer ablation (fused AdamW vs Muon hybrid)
+- **Goal:** Compare PyTorch 2.9’s native Muon optimizer (matrix-only) versus the fused AdamW default on the pilot config.
+- **Setup:** Both runs use `configs/pilot.yaml` with `train.steps=5000`, batch = 6, seq = 2048, GPU 1 only. Mixed-precision bf16 + SDPA/compile remain enabled.
+- **AdamW run:** `pilot-opt-adamw-20251115173858` → checkpoint `artifacts/checkpoints/pilot-opt-adamw-20251115173858/step_005000.pt`, log `logs/pilot-opt-adamw-20251115173858.log`. Metrics:
+  * Zero-shot (`eval/zeroshot_pilot_opt_adamw_step5000.json`): PIQA 0.559, HellaSwag 0.273, Winogrande 0.500, BoolQ 0.367.
+  * NIAH (`eval/niah_pilot_opt_adamw_step5000.json`): accuracies {0.75, 1.00, 0.50, 0.75, 0.50, 0.25}.
+  * Continual (`eval/continual_pilot_opt_adamw_step5000.json`): CE ≈50.1 / 43.3 / 39.3 / 38.7.
+- **Muon hybrid run:** `pilot-opt-muon-20251115180139` (Muons on ≥2D tensors, AdamW elsewhere) → checkpoint `artifacts/checkpoints/pilot-opt-muon-20251115180139/step_005000.pt`.
+  * Zero-shot (`eval/zeroshot_pilot_opt_muon_step5000.json`): PIQA 0.531, HellaSwag 0.313, Winogrande 0.484, BoolQ 0.570.
+  * NIAH (`eval/niah_pilot_opt_muon_step5000.json`): {0.50, 0.50, 0.25, 0.75, 0.75, 0.75}.
+  * Continual (`eval/continual_pilot_opt_muon_step5000.json`): CE ≈11.3 / 11.3 / 11.2 / 10.8.
+- **Takeaway:** Muon aggressively reduces continual loss (~4×) and boosts BoolQ/NIAH long-context retention at the expense of a slight PIQA dip. We’ll standardize on Muon for the resumed HOPE long run (step > 230 k) and keep the AdamW checkpoints as baseline references. Next action: re-launch the paused HOPE `pilot_full` tmux job with `optim.type=muon` and teach_scale=0.10 after the TITAN baseline frees GPU 0.
 
 ## 3. Recommended Workflow for Contributors
 1. **Environment** – `uv sync --all-extras && uv run bash scripts/data/run_sample.sh`

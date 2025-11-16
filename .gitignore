@@ -20,6 +20,7 @@ configs/_tmp*
 git.env
 docs/POSTS.md
 docs/EX_*.md
+wandb/
 
 # Editors
 .DS_Store

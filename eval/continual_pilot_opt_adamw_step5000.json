@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/pilot-opt-adamw-20251115173858/step_005000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 50.124265953705965,
+      "wikipedia_sample": 43.31982135212818,
+      "c4_sample": 39.34402806231654,
+      "redpajama_sample": 38.658693508439335
+    }
+  }
+]

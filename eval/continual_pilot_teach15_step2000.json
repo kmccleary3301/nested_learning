@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/pilot_teach15/step_002000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 69.37442438233855,
+      "wikipedia_sample": 66.62145991316046,
+      "c4_sample": 66.5390625,
+      "redpajama_sample": 68.55203797700587
+    }
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "piqa_accuracy": 0.51953125,
+  "piqa_samples": 256,
+  "hellaswag_accuracy": 0.27734375,
+  "hellaswag_samples": 256,
+  "winogrande_accuracy": 0.47265625,
+  "winogrande_samples": 256,
+  "arc_arc-easy_accuracy": 0.3203125,
+  "arc_arc-easy_samples": 256,
+  "arc_arc-challenge_accuracy": 0.2421875,
+  "arc_arc-challenge_samples": 256,
+  "boolq_accuracy": 0.6328125,
+  "boolq_samples": 256,
+  "siqa_accuracy": 0.30078125,
+  "siqa_samples": 256,
+  "commonsenseqa_accuracy": 0.19140625,
+  "commonsenseqa_samples": 256,
+  "openbookqa_accuracy": 0.1484375,
+  "openbookqa_samples": 256
+}

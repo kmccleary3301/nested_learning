@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/pilot_selfmod_off/step_005000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 45.68723512414383,
+      "wikipedia_sample": 44.921795116805285,
+      "c4_sample": 44.4194165851272,
+      "redpajama_sample": 45.51563474651419
+    }
+  }
+]

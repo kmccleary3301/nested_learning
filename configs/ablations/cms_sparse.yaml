@@ -1,0 +1,43 @@
+defaults:
+  - /pilot
+  - _self_
+
+model:
+  dim: 384
+  num_layers: 8
+  heads: 6
+  titan_level:
+    name: titan
+    update_period: 8
+    optimizer_key: titan_opt
+  cms_hidden_multiplier: 2
+  cms_levels:
+    - name: cms_fast
+      update_period: 8
+      optimizer_key: cms_opt
+    - name: cms_mid
+      update_period: 32
+      optimizer_key: cms_opt
+    - name: cms_slow
+      update_period: 128
+      optimizer_key: cms_opt
+    - name: cms_ultra
+      update_period: 512
+      optimizer_key: cms_opt
+
+data:
+  seq_len: 1024
+  batch_size: 2
+  num_workers: 2
+
+train:
+  steps: 5000
+  device: "cuda:1"
+  checkpoint:
+    dir: artifacts/checkpoints/pilot_cms_sparse
+    save_interval: 1000
+  log_interval: 25
+
+logging:
+  path: logs/pilot_cms_sparse_metrics.json
+  run_name: pilot-cms-sparse

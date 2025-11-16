@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/examples/pilot_dummy.pt",
+    "segment_losses": {
+      "refinedweb_2018": 10.550894003791585,
+      "wikipedia_sample": 10.583863976883562,
+      "c4_sample": 10.598039421783268,
+      "redpajama_sample": 10.557760518590998
+    }
+  }
+]

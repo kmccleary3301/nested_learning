@@ -105,7 +105,8 @@ def build_hellaswag_texts(sample: dict) -> Tuple[str, List[str], int]:
     prompt = f"{sample['ctx_a'].strip()} {sample['ctx_b'].strip()}".strip()
     endings = [ending.strip() for ending in sample["endings"]]
     texts = [f"{prompt} {ending}" for ending in endings]
-    target = sample["label"]
+    label = sample["label"]
+    target = int(label) if not isinstance(label, int) else label
     return prompt, texts, target
 
 

@@ -103,18 +103,39 @@ Pilot PIQA example (32-sample subset, single GPU):
 
 At this scale, memorization neither helps nor hurts, but the infrastructure is in place to replicate the substantial gains reported in HOPE/TITAN once longer contexts and richer checkpoints are available.
 
--### 3.6 Pilot (3 B tokens) – short-run snapshot
-- **Config:** `configs/pilot.yaml` (dim 512, 12 layers, TITAN + CMS fast/mid/slow/ultra, teach_schedule warmup 2k → decay 120k→140k).
-- **Short run:** Completed a 9 000-step pass (≈55 M tokens) on `cuda:1` with checkpoints every 500 steps. Latest bundle: `artifacts/pilot_release/step_009000.pt`.
-- **Metrics (memorization enabled):**
-  | Eval | HOPE (step 9000) | TITAN (step 9000) |
-  |------|------------------|------------------|
-  | PIQA (128 samples) | **0.5625** | 0.4922 |
-  | NIAH (2k/4k/8k contexts, 2 samples each) | 0.0 / 0.0 / 0.0 | 0.5 / 0.5 / 0.5 |
-  | Continual (sample segments, 2 batches) | CE ≈ 35–43 | CE ≈ 12–14 |
-- **Status:** HOPE loss drops from 93 → 18 by step 9000, while TITAN’s continual losses fall faster but lag on PIQA. Neither model shows long-context recall yet.
-- **Packaging:** `artifacts/pilot_release/` contains both checkpoints, configs, logs, metadata, and eval JSONs so contributors can download the snapshots.
-- **Next:** Keep the long HOPE run alive (`tmux pilot_full`) and schedule larger TITAN runs plus ablations (teach-scale, CMS toggles, Muon vs AdamW) to populate the comparison tables once we pass the 25k-step mark.
+### 3.6 Pilot (3 B tokens) – 230 k-step snapshot
+- **Config:** `configs/pilot.yaml` (dim 512, 12 layers, TITAN + CMS fast/mid/slow/ultra, teach_schedule warmup 2k → decay 120k→140k). Train batch = 6, seq_len = 2048, Muon optimizer, bf16 autocast + SDPA + `torch.compile`.
+- **Run status:** The HOPE pilot reached step 246 667 (≈3.0 B tokens). We package the step 230 000 checkpoint as the release artifact because it predates the LR cooldown and logged stable eval metrics.
+- **Metrics (memorization enabled, 256-sample cap per task):**
+
+  | Eval | HOPE (step 230k) | TITAN (step 9k, reference) |
+  |------|------------------|----------------------------|
+  | PIQA | **0.496** | 0.492 |
+  | HellaSwag | 0.297 | – |
+  | Winogrande | 0.473 | – |
+  | ARC-E / ARC-C | 0.285 / 0.234 | – |
+  | BoolQ | 0.367 | – |
+  | SIQA | 0.316 | – |
+  | CommonSenseQA | 0.180 | – |
+  | OpenBookQA | 0.113 | – |
+  | NIAH (2 k → 65 k) | 0.625 / 0.50 / 0.375 / 0.50 / 0.75 / 0.50 | 0.50 @ 2–8 k |
+  | Continual CE (RefinedWeb/Wiki/C4/RP) | 8.06 / 7.79 / 7.68 / 7.95 | 12–14 |
+
+- **Packaging:** `artifacts/pilot_release/` mirrors the 230 k checkpoint (`checkpoint.pt`), config snapshot, pilot logs, metadata with the 3 B-token goal, and eval JSONs (legacy step 22 k + new step 230 k). TITAN short-run metrics remain bundled.
+- **Next:** With both HOPE (step 230 k) and TITAN (step 25 k) packaged, the immediate tasks are (1) run the queued ablations (teach-scale, CMS chunking, optimizer swaps) on the HOPE checkpoint tree, and (2) extend evaluation coverage to larger configs before resuming the HOPE long run past 246 k steps.
+
+- **TITAN baseline (25 k steps):** The long run on `configs/mid_titan_baseline.yaml` wrapped at step 25 000 (`artifacts/checkpoints/mid_titan_baseline/step_025000.pt`, W&B `titan-long-20251113192738`). Fresh evals (memorization on, 256 max samples) show:
+
+  | Eval | TITAN (step 25k) |
+  |------|------------------|
+  | PIQA / HellaSwag / Winogrande | 0.484 / 0.293 / 0.480 |
+  | ARC-E / ARC-C / BoolQ / SIQA | 0.281 / 0.250 / 0.398 / 0.293 |
+  | CSQA / OpenBookQA | 0.188 / 0.145 |
+  | NIAH (2 k → 65 k) | 0.50 / 0.625 / 0.125 / 0.75 / 0.50 / 0.125 |
+  | Continual CE (RefinedWeb/Wiki/C4/RP) | 8.36 / 8.12 / 7.85 / 8.11 |
+
+  Outputs live in `eval/zeroshot_titan_step25000.json`, `eval/niah_titan_step25000.json`, `eval/continual_titan_step25000.json` (also copied into `artifacts/pilot_release/` alongside `titan_step_025000.pt`). These numbers now provide the matched baseline for HOPE step 230 k comparisons and upcoming ablations.
+
 
 ---
 
@@ -127,8 +148,8 @@ At this scale, memorization neither helps nor hurts, but the infrastructure is i
 ---
 
 ## 5. Limitations
-- Training horizon limited to ~220 steps / ≈150k tokens due to hardware and time; no large-scale reproduction yet.
-- No TITAN vs HOPE comparison on long-context or continual benchmarks beyond short runs.
+- Current comparisons cover only the 160 M-scale HOPE/TITAN pair; larger configs (760 M / 1.3 B) remain untrained.
+- Scaling beyond the pilot is still blocked on additional compute + stability sweeps for teach_scale, CMS depth, and optimizer variants.
 - DDP/TITAN runs still rely on JSON logging; integration with structured logging (e.g., W&B) is deferred to future contributors.
 - Pipeline uses filtered RefinedWeb proxies; exact data parity with Google’s internal corpora is not guaranteed.
 

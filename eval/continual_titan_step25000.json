@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/mid_titan_baseline/step_025000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 8.3643957925636,
+      "wikipedia_sample": 8.122951082054183,
+      "c4_sample": 7.853781790835983,
+      "redpajama_sample": 8.109655140617356
+    }
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "piqa_accuracy": 0.55859375,
+  "piqa_samples": 256,
+  "hellaswag_accuracy": 0.2734375,
+  "hellaswag_samples": 256,
+  "winogrande_accuracy": 0.5,
+  "winogrande_samples": 256,
+  "boolq_accuracy": 0.3671875,
+  "boolq_samples": 256
+}

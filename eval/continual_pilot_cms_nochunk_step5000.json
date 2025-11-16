@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/pilot_cms_nochunk/step_005000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 46.577801645058706,
+      "wikipedia_sample": 47.75575092114114,
+      "c4_sample": 49.66668201901908,
+      "redpajama_sample": 52.05659361240215
+    }
+  }
+]

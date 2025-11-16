@@ -1,0 +1,11 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/pilot-opt-muon-20251115180139/step_005000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 11.34836554779232,
+      "wikipedia_sample": 11.255398661096502,
+      "c4_sample": 11.203000970829256,
+      "redpajama_sample": 10.75289801132889
+    }
+  }
+]
