@@ -54,6 +54,7 @@ def build_fsdp_model(cfg: DictConfig, device: torch.device) -> tuple[FSDP, torch
         device_id=device.index,
         auto_wrap_policy=auto_wrap_policy,
         cpu_offload=cpu_offload,
+        use_orig_params=True,  # Required for custom inner optimizers / in-place updates
     )
     return model, base_model
 

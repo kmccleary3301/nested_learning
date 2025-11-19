@@ -89,21 +89,29 @@ class TitanOnlyBlock(nn.Module):
             surprise_value = float(teach_signal.norm())
             if surprise_value < self.surprise_threshold:
                 return
-            return
-        pooled_key = attn_out.mean(dim=1)
-        pooled_value = mem_out.mean(dim=1)
-        pooled_error = teach_signal.mean(dim=1)
+        # Use full sequence for granular updates (Critique P1)
+        # Note: We intentionally do not pool over dim=1 (sequence) here.
         modifier = self.self_modifier(
-            key=pooled_key.detach(),
-            value=pooled_value.detach(),
-            error_signal=pooled_error.detach(),
+            key=attn_out.detach(),
+            value=mem_out.detach(),
+            error_signal=teach_signal.detach(),
         )
         context_vec = attn_out.detach().mean(dim=(0, 1))
         with torch.enable_grad():
             query = attn_out.detach().requires_grad_(True)
-            target = (teach_signal.detach() + modifier.unsqueeze(1)).detach()
+            target = (teach_signal.detach() + modifier).detach()
             prediction = self.titan_memory(query)
-            loss = nn.functional.mse_loss(prediction, target)
+            
+            # Granular Masking (Critique P1)
+            loss = nn.functional.mse_loss(prediction, target, reduction='none')
+            if self.surprise_threshold is not None:
+                with torch.no_grad():
+                     norms = teach_signal.norm(dim=-1, keepdim=True)
+                     mask = (norms >= self.surprise_threshold).float()
+                loss = (loss * mask).sum() / mask.sum().clamp(min=1.0)
+            else:
+                loss = loss.mean()
+            
         self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
         # Pop metrics to avoid stale entries even if we do not log them yet.
         self.level_manager.pop_last_metrics(level_name)

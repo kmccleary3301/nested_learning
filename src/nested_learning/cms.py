@@ -72,7 +72,7 @@ class CMS(nn.Module):
         self._chunk_buffers: Dict[str, list[dict[str, torch.Tensor]]] = {
             spec.name: [] for spec in self.level_specs
         }
-        self._pending_chunks: Dict[str, tuple[torch.Tensor, torch.Tensor] | None] = {
+        self._pending_chunks: Dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None] = {
             spec.name: None for spec in self.level_specs
         }
         self.last_update_stats: Dict[str, Dict[str, float]] = {}
@@ -101,8 +101,8 @@ class CMS(nn.Module):
         inputs: Dict[str, torch.Tensor],
         outputs: Dict[str, torch.Tensor],
         error_signals: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Dict[str, tuple[torch.Tensor, torch.Tensor]]:
-        ready: Dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+    ) -> Dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        ready: Dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
         for spec in self.level_specs:
             name = spec.name
             if self._pending_chunks[name] is not None:
@@ -125,9 +125,9 @@ class CMS(nn.Module):
             if len(self._chunk_buffers[name]) < chunk_size:
                 continue
             entries = self._chunk_buffers[name][:chunk_size]
-            chunk_inputs = self._pad_and_cat([entry["input"] for entry in entries])
-            chunk_targets = self._pad_and_cat([entry["target"] for entry in entries])
-            self._pending_chunks[name] = (chunk_inputs, chunk_targets)
+            chunk_inputs, inputs_mask = self._pad_and_cat([entry["input"] for entry in entries])
+            chunk_targets, _ = self._pad_and_cat([entry["target"] for entry in entries])
+            self._pending_chunks[name] = (chunk_inputs, chunk_targets, inputs_mask)
             ready[name] = self._pending_chunks[name]  # type: ignore[assignment]
         return ready
 
@@ -144,19 +144,24 @@ class CMS(nn.Module):
         self._pending_chunks[name] = None
 
     @staticmethod
-    def _pad_and_cat(tensors: list[torch.Tensor]) -> torch.Tensor:
+    def _pad_and_cat(tensors: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         if not tensors:
             raise ValueError("No tensors to stack")
         seq_lens = {tensor.shape[1] for tensor in tensors}
         if len(seq_lens) == 1:
-            return torch.cat(tensors, dim=0)
+            stacked = torch.cat(tensors, dim=0)
+            mask = torch.ones((stacked.shape[0], stacked.shape[1]), device=stacked.device, dtype=torch.bool)
+            return stacked, mask
         max_len = max(seq_lens)
         padded = []
+        masks = []
         for tensor in tensors:
-            if tensor.shape[1] == max_len:
+            curr_len = tensor.shape[1]
+            if curr_len == max_len:
                 padded.append(tensor)
+                masks.append(torch.ones((tensor.shape[0], curr_len), device=tensor.device, dtype=torch.bool))
                 continue
-            pad_len = max_len - tensor.shape[1]
+            pad_len = max_len - curr_len
             pad_shape = (tensor.shape[0], pad_len, tensor.shape[2])
             pad = torch.zeros(
                 pad_shape,
@@ -164,4 +169,7 @@ class CMS(nn.Module):
                 dtype=tensor.dtype,
             )
             padded.append(torch.cat([tensor, pad], dim=1))
-        return torch.cat(padded, dim=0)
+            ones = torch.ones((tensor.shape[0], curr_len), device=tensor.device, dtype=torch.bool)
+            zeros = torch.zeros((tensor.shape[0], pad_len), device=tensor.device, dtype=torch.bool)
+            masks.append(torch.cat([ones, zeros], dim=1))
+        return torch.cat(padded, dim=0), torch.cat(masks, dim=0)

@@ -55,16 +55,13 @@ class DeepMomentum(nn.Module):
         if ctx.ndim > 1:
             ctx = ctx.reshape(-1, ctx.shape[-1]).mean(dim=0)
         ctx_norm = torch.norm(ctx)
-        if ctx_norm <= self.eps:
-            return grad, metrics
-        unit = ctx / ctx_norm
         metrics["ctx_norm"] = ctx_norm.item()
-        if grad.ndim == 0 or grad.shape[-1] != unit.shape[0]:
-            return grad, metrics
-        component = (grad * unit).sum(dim=-1, keepdim=True) * unit
-        metrics["proj_norm"] = component.norm().item()
-        update = grad - component
-        return update, metrics
+        
+        # Fix: Removed orthogonalization which was zeroing out updates parallel to context.
+        # For now, we return the gradient as-is (Standard GD behavior).
+        # Future work: Implement exact Eq 29 update: W_new = W_old(I - xx^T) - eta*grad
+        
+        return grad, metrics
 
     def forward(self, grad: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:  # type: ignore[override]
         if self.state.grad_avg is None or self.state.grad_avg.shape != grad.shape:

@@ -98,20 +98,33 @@ class HOPEBlock(nn.Module):
         if not self._passes_surprise(surprise_value):
             self._record_gate(level_name, hit=False)
             return
-        pooled_key = attn_out.mean(dim=1)
-        pooled_value = mem_out.mean(dim=1)
-        pooled_error = teach_signal.mean(dim=1)
+        # Use full sequence for granular updates (Critique P1)
+        # Note: We intentionally do not pool over dim=1 (sequence) here.
+        # teach_signal is (B, T, D), attn_out is (B, T, D)
         modifier = self.self_modifier(
-            key=pooled_key.detach(),
-            value=pooled_value.detach(),
-            error_signal=pooled_error.detach(),
+            key=attn_out.detach(),
+            value=mem_out.detach(),
+            error_signal=teach_signal.detach(),
         )
+        # context_vec is still pooled for the optimizer interface which expects a vector/low-rank hint
         context_vec = attn_out.detach().mean(dim=(0, 1))
+        
         with torch.enable_grad():
             query = attn_out.detach().requires_grad_(True)
-            target = (teach_signal.detach() + modifier.unsqueeze(1)).detach()
+            target = (teach_signal.detach() + modifier).detach() # modifier is now (B, T, D)
             prediction = self.titan_memory(query)
-            loss = F.mse_loss(prediction, target)
+            
+            # Granular Masking (Critique P1)
+            loss = F.mse_loss(prediction, target, reduction='none')
+            if self.surprise_threshold is not None:
+                # Mask out tokens where surprise < threshold
+                with torch.no_grad():
+                     norms = teach_signal.norm(dim=-1, keepdim=True)
+                     mask = (norms >= self.surprise_threshold).float()
+                loss = (loss * mask).sum() / mask.sum().clamp(min=1.0)
+            else:
+                loss = loss.mean()
+        
         magnitude = self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
         extra_metrics = self.level_manager.pop_last_metrics(level_name)
         stats = {"grad_norm": magnitude, "gate_hit": 1.0}
@@ -146,11 +159,14 @@ class HOPEBlock(nn.Module):
             chunk = chunk_map.get(level_name)
             if chunk is None:
                 continue
-            chunk_inputs, chunk_targets = chunk
+            chunk_inputs, chunk_targets, chunk_mask = chunk
             with torch.enable_grad():
                 chunk_inp = chunk_inputs.detach().requires_grad_(True)
                 prediction = self.cms.blocks[level_name](chunk_inp)
-                loss = F.mse_loss(prediction, chunk_targets)
+                diff = prediction - chunk_targets
+                diff_sq = diff.pow(2)
+                mask_expanded = chunk_mask.unsqueeze(-1).expand_as(diff_sq)
+                loss = (diff_sq * mask_expanded).sum() / mask_expanded.sum().clamp(min=1.0)
             context_vec = chunk_inputs.mean(dim=(0, 1))
             magnitude = self.level_manager.optimize(
                 level_name,
