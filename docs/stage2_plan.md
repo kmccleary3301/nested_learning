@@ -121,7 +121,7 @@ Each ablation run uses Pilot scale unless specified; record metrics in `reports/
 3. **Scaling Training** – pilot → mid → target runs; monitor; adjust hyper-params.
 4. **Evaluation** – implement LM + zero-shot harness, NIAH generator, continual-learning scripts.
 5. **Ablations & Analysis** – run targeted toggles, plot results, compare to paper.
-6. **Documentation & Release** – write experiment logs, dataset README, reproduction checklists.
+6. **Documentation & Release** – write experiment logs, dataset README, reproduction checklists. Keep `docs/release_checklist.md` updated and treat it as the gate for tagging/publishing checkpoints.
 
 Each workstream tracked via `TODO.md` or issue tracker; dependencies: (1) before (3/4), etc.
 

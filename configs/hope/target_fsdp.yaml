@@ -1,0 +1,41 @@
+defaults:
+  - /hope/target
+  - _self_
+
+model:
+  gradient_checkpointing: true
+
+data:
+  batch_size: 4  # per-rank micro-batch
+  num_workers: 8
+
+train:
+  steps: 300000
+  log_interval: 20
+  device: "cuda"
+  mixed_precision:
+    enabled: true
+    dtype: bf16
+  compile:
+    enable: false
+  fsdp:
+    auto_wrap_min_params: 2500000
+    cpu_offload: false
+  checkpoint:
+    enable: true
+    dir: artifacts/checkpoints/target_fsdp
+    save_interval: 1000
+    resume_path: null
+    resume_tag: null
+
+optim:
+  type: muon
+  lr: 1.5e-4
+  weight_decay: 0.01
+
+logging:
+  enabled: true
+  backend: wandb
+  project: nested-learning
+  run_name: hope-target-fsdp-${now:%Y%m%d%H%M%S}
+  path: logs/target_fsdp_metrics.json

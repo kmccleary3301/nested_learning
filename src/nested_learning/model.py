@@ -5,6 +5,7 @@ from typing import Dict, Sequence
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from .hope.block import HOPEBlock, HOPEBlockConfig
 from .levels import LevelSpec
@@ -22,6 +23,8 @@ class ModelConfig:
     teach_scale: float = 1.0
     teach_clip: float = 0.0
     teach_schedule: Dict[str, float] | None = None
+    gradient_checkpointing: bool = False
+    surprise_threshold: float | None = None
 
 
 class HOPEModel(nn.Module):
@@ -33,6 +36,9 @@ class HOPEModel(nn.Module):
         self.base_teach_clip = config.teach_clip
         self._runtime_teach_scale = config.teach_scale
         self._runtime_teach_clip = config.teach_clip
+        self.gradient_checkpointing = config.gradient_checkpointing
+        self._surprise_threshold = config.surprise_threshold
+        self._allowed_update_levels: set[str] | None = None
         block_config = HOPEBlockConfig(
             dim=config.dim,
             heads=config.heads,
@@ -46,12 +52,29 @@ class HOPEModel(nn.Module):
         # Weight tying keeps the LM head gradient aligned with the embedding space.
         self.lm_head.weight = self.embed.weight
         self._latest_update_metrics: Dict[str, float] = {}
+        self.set_surprise_threshold(self._surprise_threshold)
 
     def set_teach_runtime(self, *, scale: float | None = None, clip: float | None = None) -> None:
         if scale is not None:
             self._runtime_teach_scale = scale
         if clip is not None:
             self._runtime_teach_clip = clip
+
+    def set_surprise_threshold(self, threshold: float | None) -> None:
+        self._surprise_threshold = threshold
+        for block in self.blocks:
+            block.set_surprise_threshold(threshold)
+
+    def get_surprise_threshold(self) -> float | None:
+        return self._surprise_threshold
+
+    def set_allowed_update_levels(self, levels: set[str] | None) -> None:
+        self._allowed_update_levels = levels.copy() if levels is not None else None
+        for block in self.blocks:
+            block.set_allowed_levels(self._allowed_update_levels)
+
+    def get_allowed_update_levels(self) -> set[str] | None:
+        return None if self._allowed_update_levels is None else self._allowed_update_levels.copy()
 
     def forward(
         self,
@@ -60,6 +83,9 @@ class HOPEModel(nn.Module):
         teach_signal: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x = self.embed(tokens)
+        surprise_value: float | None = None
+        if teach_signal is not None:
+            surprise_value = float(teach_signal.norm(dim=-1).mean().item())
         for block in self.blocks:
             scaled_signal = None
             if teach_signal is not None:
@@ -68,7 +94,15 @@ class HOPEModel(nn.Module):
                     norm = scaled_signal.norm(dim=-1, keepdim=True)
                     scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
                     scaled_signal = scaled_signal / scale
-            x = block(x, teach_signal=scaled_signal)
+            block_call = lambda hidden, blk=block, sig=scaled_signal: blk(
+                hidden,
+                teach_signal=sig,
+                surprise_value=surprise_value,
+            )
+            if self.training and self.gradient_checkpointing:
+                x = checkpoint(block_call, x, use_reentrant=False)
+            else:
+                x = block_call(x)
         x = self.norm(x)
         logits = self.lm_head(x)
         if teach_signal is not None:

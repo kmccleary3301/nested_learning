@@ -31,6 +31,7 @@ class DeepMomentum(nn.Module):
         self.variant = variant
         self.state = DeepMomentumState()
         self.nonlinearity = nn.Tanh() if variant in {"dmgd", "muon"} else nn.Identity()
+        self.last_metrics: dict[str, float] = {}
 
     def reset_state(self) -> None:
         self.state = DeepMomentumState()
@@ -42,30 +43,41 @@ class DeepMomentum(nn.Module):
         denom = self.state.sq_avg.sqrt().add_(self.eps)
         return grad / denom
 
-    def _nl_precondition(self, grad: torch.Tensor, context: torch.Tensor | None) -> torch.Tensor:
+    def _nl_precondition(
+        self,
+        grad: torch.Tensor,
+        context: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        metrics: dict[str, float] = {"ctx_norm": 0.0, "proj_norm": 0.0}
         if context is None:
-            return grad
+            return grad, metrics
         ctx = context
         if ctx.ndim > 1:
             ctx = ctx.reshape(-1, ctx.shape[-1]).mean(dim=0)
-        ctx_norm = torch.norm(ctx).clamp_min(self.eps)
+        ctx_norm = torch.norm(ctx)
+        if ctx_norm <= self.eps:
+            return grad, metrics
         unit = ctx / ctx_norm
-        target_dim = unit.shape[0]
-        if grad.ndim == 0 or grad.shape[-1] != target_dim:
-            return grad
-        proj = torch.outer(unit, unit)
-        return grad - torch.matmul(grad, proj)
+        metrics["ctx_norm"] = ctx_norm.item()
+        if grad.ndim == 0 or grad.shape[-1] != unit.shape[0]:
+            return grad, metrics
+        component = (grad * unit).sum(dim=-1, keepdim=True) * unit
+        metrics["proj_norm"] = component.norm().item()
+        update = grad - component
+        return update, metrics
 
     def forward(self, grad: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:  # type: ignore[override]
         if self.state.grad_avg is None or self.state.grad_avg.shape != grad.shape:
             self.state.grad_avg = torch.zeros_like(grad)
+        self.last_metrics = {}
         update = grad
         if self.variant in {"preconditioned", "muon"}:
             update = self._precondition(grad)
         if self.variant == "l2_objective":
             update = grad + 0.1 * torch.mean(grad, dim=-1, keepdim=True)
         if self.variant == "nl_l2_precond":
-            update = self._nl_precondition(grad, context)
+            update, metrics = self._nl_precondition(grad, context)
+            self.last_metrics.update(metrics)
         if self.variant in {"dmgd", "muon"}:
             update = self.nonlinearity(update)
         self.state.grad_avg.mul_(self.beta).add_(update, alpha=1 - self.beta)

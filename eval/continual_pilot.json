@@ -1,11 +1,41 @@
 [
   {
-    "checkpoint": "artifacts/pilot_release/checkpoint.pt",
+    "checkpoint": "artifacts/checkpoints/pilot_relaunch/step_231000.pt",
     "segment_losses": {
-      "refinedweb_2018": 37.96144202544031,
-      "wikipedia_sample": 38.18295544887476,
-      "c4_sample": 38.11340164811644,
-      "redpajama_sample": 37.787984650195696
+      "refinedweb_2018": 23.102353496514187,
+      "wikipedia_sample": 22.56078528238136,
+      "c4_sample": 22.725026564028866,
+      "redpajama_sample": 22.576520456213306
+    },
+    "segment_baseline_losses": {
+      "refinedweb_2018": 23.102353496514187,
+      "wikipedia_sample": 22.56078528238136,
+      "c4_sample": 22.725026564028866,
+      "redpajama_sample": 22.576520456213306
+    },
+    "segment_memorize_delta": {
+      "refinedweb_2018": 0.0,
+      "wikipedia_sample": 0.0,
+      "c4_sample": 0.0,
+      "redpajama_sample": 0.0
+    },
+    "memorize_stats": {
+      "refinedweb_2018": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      },
+      "wikipedia_sample": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      },
+      "c4_sample": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      },
+      "redpajama_sample": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      }
     }
   }
 ]

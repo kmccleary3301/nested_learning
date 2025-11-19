@@ -26,6 +26,8 @@ from nested_learning.training import (
     _make_autocast_factory,
     _maybe_compile_model,
     _seed_everything,
+    verify_checkpoint_integrity,
+    write_checkpoint_metadata,
     unwrap_config,
 )
 
@@ -64,20 +66,34 @@ def unwrap_model(module: torch.nn.Module) -> torch.nn.Module:
     return module
 
 
-def save_checkpoint(cfg: DictConfig, model: FSDP, optimizer: torch.optim.Optimizer, step: int, rank: int) -> None:
+def save_checkpoint(
+    cfg: DictConfig,
+    model: FSDP,
+    optimizer: torch.optim.Optimizer,
+    step: int,
+    rank: int,
+    step_offset: int = 0,
+) -> None:
     ckpt_cfg = cfg.train.get("checkpoint")
-    if not ckpt_cfg or not ckpt_cfg.get("enable", False) or step % ckpt_cfg.get("save_interval", 100) != 0:
+    if not ckpt_cfg or not ckpt_cfg.get("enable", False):
         return
-    if rank != 0:
+    save_interval = ckpt_cfg.get("save_interval", 1000)
+    save_last = ckpt_cfg.get("save_last", True)
+    total_steps = cfg.train.get("steps", step + 1)
+    next_step = step + 1
+    should_save = (next_step % save_interval == 0) or (save_last and next_step >= total_steps)
+    if not should_save or rank != 0:
         return
     ckpt_dir = Path(ckpt_cfg.get("dir", "checkpoints/fsdp"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = ckpt_dir / f"step_{step:06d}.pt"
+    global_step = next_step + int(step_offset)
+    ckpt_path = ckpt_dir / f"step_{global_step:06d}.pt"
     full_state_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     with state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_cfg):
         model_state = model.state_dict()
-    state = {"model": model_state, "optimizer": optimizer.state_dict(), "step": step}
+    state = {"model": model_state, "optimizer": optimizer.state_dict(), "step": global_step}
     torch.save(state, ckpt_path)
+    write_checkpoint_metadata(cfg, ckpt_path, global_step)
 
 
 def maybe_resume(cfg: DictConfig, model: FSDP, optimizer: torch.optim.Optimizer, rank: int) -> int:
@@ -90,6 +106,7 @@ def maybe_resume(cfg: DictConfig, model: FSDP, optimizer: torch.optim.Optimizer,
     if not Path(resume_path).exists():
         raise FileNotFoundError(f"Resume checkpoint {resume_path} not found")
     map_location = "cpu"
+    verify_checkpoint_integrity(Path(resume_path))
     state = torch.load(resume_path, map_location=map_location)
     full_state_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
     with state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_cfg):

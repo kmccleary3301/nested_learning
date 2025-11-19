@@ -29,7 +29,7 @@ def load_model(config_path: Path, checkpoint: Path, device: torch.device):
     cfg = OmegaConf.load(config_path)
     cfg = unwrap_config(cfg)
     model = build_model_from_cfg(cfg.model)
-    state = torch.load(checkpoint, map_location="cpu")
+    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
     state_dict = state["model"] if "model" in state else state
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
@@ -61,29 +61,51 @@ def evaluate_multiple_choice(
     max_samples: int | None,
     memorize_cfg: MemorizeConfig,
 ) -> Dict[str, float]:
-    correct = 0
+    correct_mem = 0
+    correct_base = 0
     total = 0
     base_state: Dict[str, torch.Tensor] | None = None
+    path_stats: Dict[str, float] = defaultdict(float)
     for sample in tqdm(dataset_iter, desc=task_name.upper()):
         prompt, texts, answer_idx = build_texts_fn(sample)
+        scores_base = [score_text(model, tokenizer, t, device) for t in texts]
+        pred_base = int(max(range(len(scores_base)), key=lambda i: scores_base[i]))
+        correct_base += int(pred_base == answer_idx)
         if memorize_cfg.enabled:
             if memorize_cfg.reset and base_state is None:
                 base_state = snapshot_state_dict(model)
             memorize_text = prompt
             if memorize_cfg.use_correct_answer:
                 memorize_text = f"{prompt} {texts[answer_idx]}".strip()
-            memorize_sequence(model, tokenizer, memorize_text, device, memorize_cfg.steps)
-        scores = [score_text(model, tokenizer, t, device) for t in texts]
-        pred = int(max(range(len(scores)), key=lambda i: scores[i]))
-        if pred == answer_idx:
-            correct += 1
+            stats = memorize_sequence(model, tokenizer, memorize_text, device, memorize_cfg)
+            for key, value in stats.items():
+                path_stats[key] += value
+            scores_eval = [score_text(model, tokenizer, t, device) for t in texts]
+            pred_eval = int(max(range(len(scores_eval)), key=lambda i: scores_eval[i]))
+            correct_mem += int(pred_eval == answer_idx)
+        else:
+            correct_mem += int(pred_base == answer_idx)
         total += 1
         if memorize_cfg.enabled and memorize_cfg.reset and base_state is not None:
             restore_state_dict(model, base_state)
         if max_samples and total >= max_samples:
             break
-    accuracy = correct / total if total else 0.0
-    return {f"{task_name}_accuracy": accuracy, f"{task_name}_samples": total}
+    accuracy = correct_mem / total if total else 0.0
+    result: Dict[str, float] = {f"{task_name}_accuracy": accuracy, f"{task_name}_samples": total}
+    if memorize_cfg.enabled:
+        baseline_acc = correct_base / total if total else 0.0
+        result[f"{task_name}_baseline_accuracy"] = baseline_acc
+        result[f"{task_name}_memorize_accuracy"] = accuracy
+        result[f"{task_name}_memorize_delta"] = accuracy - baseline_acc
+        if memorize_cfg.paths is None:
+            result[f"{task_name}_memorize_paths"] = "all"
+        else:
+            result[f"{task_name}_memorize_paths"] = ",".join(memorize_cfg.paths)
+        if memorize_cfg.surprise_threshold is not None:
+            result[f"{task_name}_memorize_surprise_threshold"] = memorize_cfg.surprise_threshold
+        for key, value in path_stats.items():
+            result[f"{task_name}_{key}"] = value
+    return result
 
 
 def build_piqa_texts(sample: dict) -> Tuple[str, List[str], int]:
@@ -273,6 +295,13 @@ def main(
         False, help="When memorizing, include the correct answer text (for ablations)."
     ),
     memorize_no_reset: bool = typer.Option(False, help="If set, retain memorization across samples."),
+    memorize_surprise_threshold: float = typer.Option(
+        None, help="Minimum teach-signal norm required before applying memorization."
+    ),
+    memorize_paths: str = typer.Option(
+        "all",
+        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' to allow every path.",
+    ),
 ) -> None:
     available = list(TASK_EVALUATORS.keys())
     if list_tasks:
@@ -283,11 +312,17 @@ def main(
     torch_device = torch.device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)
+    if memorize_paths.lower() == "all":
+        allowed_paths = None
+    else:
+        allowed_paths = tuple(path.strip() for path in memorize_paths.split(",") if path.strip())
     memorize_cfg = MemorizeConfig(
         enabled=memorize,
         steps=max(1, memorize_steps),
         reset=not memorize_no_reset,
         use_correct_answer=memorize_use_correct_answer,
+        surprise_threshold=memorize_surprise_threshold,
+        paths=allowed_paths,
     )
 
     results: Dict[str, float] = {}

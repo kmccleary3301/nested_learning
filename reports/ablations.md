@@ -30,7 +30,7 @@ To keep chunk buffers tractable we reduced the CMS-hidden multiplier to 2, halve
 ## 4. Optimizer swaps
 | Variant | Description | Status | Notes |
 |---------|-------------|--------|-------|
-| AdamW fused | `optim.type=adamw` with fused kernels (default) | ✅ | Run `pilot-opt-adamw-20251115173858` (5 k steps, batch 6, seq 2048) → checkpoint `artifacts/checkpoints/pilot-opt-adamw-20251115173858/step_005000.pt`. Eval highlights: PIQA 0.559, HellaSwag 0.273, Winogrande 0.500, BoolQ 0.367 (`eval/zeroshot_pilot_opt_adamw_step5000.json`); NIAH accuracies {0.75, 1.0, 0.5, 0.75, 0.5, 0.25}; continual CE ≈50/43/39/39 across segments. |
+| AdamW fused (control) | `optim.type=adamw` with fused kernels (override the Muon default) | ✅ | Run `pilot-opt-adamw-20251115173858` (5 k steps, batch 6, seq 2048) → checkpoint `artifacts/checkpoints/pilot-opt-adamw-20251115173858/step_005000.pt`. Eval highlights: PIQA 0.559, HellaSwag 0.273, Winogrande 0.500, BoolQ 0.367 (`eval/zeroshot_pilot_opt_adamw_step5000.json`); NIAH accuracies {0.75, 1.0, 0.5, 0.75, 0.5, 0.25}; continual CE ≈50/43/39/39 across segments. |
 | Muon hybrid | `optim.type=muon` for ≥2D params, AdamW for embeddings/bias | ✅ | Run `pilot-opt-muon-20251115180139` (identical setup) → checkpoint `artifacts/checkpoints/pilot-opt-muon-20251115180139/step_005000.pt`. Eval highlights: PIQA 0.531, HellaSwag 0.313, Winogrande 0.484, BoolQ 0.570 (`eval/zeroshot_pilot_opt_muon_step5000.json`); NIAH {0.5, 0.5, 0.25, 0.75, 0.75, 0.75}; continual CE ≈11 across all segments (`eval/continual_pilot_opt_muon_step5000.json`). |
 | Full Muon | Force Muon everywhere | ⏳ | Pending stability run; expect to require per-layer LR tuning. |
 
@@ -47,6 +47,8 @@ At 5 k pilot steps the hybrid Muon optimizer trades a small PIQA drop (0.559�
 2. Run extended NIAH (`--context-lengths 2048 --context-lengths 4096 --context-lengths 8192 --context-lengths 16384 --context-lengths 32768 --context-lengths 65536`).
 3. Run continual-learning harness with memorization toggles (`--memorize --memorize-steps 2 --memorize-no-reset` and baseline run without memorization).
 4. Record metrics in `artifacts/pilot_release/` (JSON/CSV) and summarize deltas here.
+5. Long-context extras: `scripts/eval/passkey.py` (default 64 prompts, memorize on) and `scripts/eval/pg19_perplexity.py` (streaming PG-19, 2 048-token truncation). Archive outputs alongside zero-shot/NIAH JSONs.
+6. Continual plot: for multi-checkpoint evals, run `scripts/eval/plot_forgetting.py` and stash PNGs under `reports/plots/`.
 
 _Status legend:_ ✅ complete, ⏳ pending, 🔄 running, ⚠️ blocked.
 

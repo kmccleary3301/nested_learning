@@ -1,0 +1,41 @@
+defaults:
+  - /hope/mid
+  - _self_
+
+model:
+  gradient_checkpointing: true
+
+data:
+  batch_size: 8  # per-rank micro-batch for 2× RTX 6000 Ada
+  num_workers: 6
+
+train:
+  steps: 250000
+  log_interval: 20
+  device: "cuda"
+  mixed_precision:
+    enabled: true
+    dtype: bf16
+  compile:
+    enable: false
+  fsdp:
+    auto_wrap_min_params: 2000000
+    cpu_offload: false
+  checkpoint:
+    enable: true
+    dir: artifacts/checkpoints/mid_fsdp
+    save_interval: 1000
+    resume_path: null
+    resume_tag: null
+
+optim:
+  type: muon
+  lr: 2.0e-4
+  weight_decay: 0.01
+
+logging:
+  enabled: true
+  backend: wandb
+  project: nested-learning
+  run_name: hope-mid-fsdp-${now:%Y%m%d%H%M%S}
+  path: logs/mid_fsdp_metrics.json

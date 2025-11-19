@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
@@ -28,7 +29,7 @@ def load_model(config_path: Path, checkpoint: Path, device: torch.device) -> HOP
     cfg = OmegaConf.load(config_path)
     cfg = unwrap_config(cfg)
     model = build_model_from_cfg(cfg.model)
-    state = torch.load(checkpoint, map_location="cpu")
+    state = torch.load(checkpoint, map_location="cpu", weights_only=False)
     state_dict = state["model"] if "model" in state else state
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
@@ -75,39 +76,73 @@ def main(
     memorize_steps: int = typer.Option(1, help="Memorization passes per prompt."),
     memorize_use_correct_answer: bool = typer.Option(False, help="Include correct key when memorizing."),
     memorize_no_reset: bool = typer.Option(False, help="Retain memory between samples."),
+    memorize_surprise_threshold: float = typer.Option(
+        None, help="Minimum teach-signal norm required to trigger memorization."
+    ),
+    memorize_paths: str = typer.Option(
+        "all",
+        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' for no restriction.",
+    ),
 ) -> None:
     torch_device = torch.device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)
+    if memorize_paths.lower() == "all":
+        allowed_paths = None
+    else:
+        allowed_paths = tuple(path.strip() for path in memorize_paths.split(",") if path.strip())
     memorize_cfg = MemorizeConfig(
         enabled=memorize,
         steps=max(1, memorize_steps),
         reset=not memorize_no_reset,
         use_correct_answer=memorize_use_correct_answer,
+        surprise_threshold=memorize_surprise_threshold,
+        paths=allowed_paths,
     )
     base_state: Dict[str, torch.Tensor] | None = None
     results = {}
+    path_stats: Dict[str, float] = defaultdict(float)
     for length in context_lengths:
-        correct = 0
+        correct_base = 0
+        correct_mem = 0
         for _ in tqdm(range(samples_per_length), desc=f"NIAH@{length}"):
             needle = f"KEY-{random.randint(1000, 9999)}"
             prompt = make_prompt(needle, filler_tokens=max(1, length // 128))
+            distractor = f"KEY-{random.randint(1000, 9999)}"
+            logprob_true_base = logprob_answer(model, tokenizer, prompt, needle, torch_device)
+            logprob_false_base = logprob_answer(model, tokenizer, prompt, distractor, torch_device)
+            correct_base += int(logprob_true_base > logprob_false_base)
             if memorize_cfg.enabled:
                 if memorize_cfg.reset and base_state is None:
                     base_state = snapshot_state_dict(model)
                 memorize_text = prompt
                 if memorize_cfg.use_correct_answer:
                     memorize_text = f"{prompt} {needle}"
-                memorize_sequence(model, tokenizer, memorize_text, torch_device, memorize_cfg.steps)
-            logprob_true = logprob_answer(model, tokenizer, prompt, needle, torch_device)
-            distractor = f"KEY-{random.randint(1000, 9999)}"
-            logprob_false = logprob_answer(model, tokenizer, prompt, distractor, torch_device)
-            if logprob_true > logprob_false:
-                correct += 1
-            if memorize_cfg.enabled and memorize_cfg.reset and base_state is not None:
-                restore_state_dict(model, base_state)
-        accuracy = correct / samples_per_length
-        results[f"niah_{length}"] = accuracy
+                stats = memorize_sequence(model, tokenizer, memorize_text, torch_device, memorize_cfg)
+                for key, value in stats.items():
+                    path_stats[key] += value
+                logprob_true_mem = logprob_answer(model, tokenizer, prompt, needle, torch_device)
+                logprob_false_mem = logprob_answer(model, tokenizer, prompt, distractor, torch_device)
+                correct_mem += int(logprob_true_mem > logprob_false_mem)
+                if memorize_cfg.enabled and memorize_cfg.reset and base_state is not None:
+                    restore_state_dict(model, base_state)
+            else:
+                correct_mem += int(logprob_true_base > logprob_false_base)
+        base_acc = correct_base / samples_per_length if samples_per_length else 0.0
+        mem_acc = correct_mem / samples_per_length if samples_per_length else 0.0
+        results[f"niah_{length}"] = mem_acc
+        if memorize_cfg.enabled:
+            results[f"niah_{length}_baseline_accuracy"] = base_acc
+            results[f"niah_{length}_memorize_accuracy"] = mem_acc
+            results[f"niah_{length}_memorize_delta"] = mem_acc - base_acc
+    if memorize_cfg.enabled:
+        for key, value in path_stats.items():
+            results[f"niah_{key}"] = value
+        results["niah_memorize_paths"] = (
+            "all" if memorize_cfg.paths is None else ",".join(memorize_cfg.paths)
+        )
+        if memorize_cfg.surprise_threshold is not None:
+            results["niah_memorize_surprise_threshold"] = memorize_cfg.surprise_threshold
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2))
     typer.echo(f"[Eval] Saved NIAH metrics to {output}")

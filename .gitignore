@@ -9,7 +9,7 @@ __pycache__/
 # Local artifacts
 logs/
 artifacts/
-data/
+/data/
 outputs/
 checkpoints/
 *.pt
@@ -20,6 +20,9 @@ configs/_tmp*
 git.env
 docs/POSTS.md
 docs/EX_*.md
+docs/CHECK_2_PLANNING_MODEL_REQUEST.md
+docs/CHECK_2_PLANNING_MODEL_RESPONSE.md
+docs/planner_check2_attachments.zip
 wandb/
 
 # Editors

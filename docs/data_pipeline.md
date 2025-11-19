@@ -18,6 +18,16 @@ The Stage 2 mixture mimics RefinedWeb + supplements. Download each source into
 | RedPajama CC subset | CC BY | Use `togethercomputer/RedPajama-Data-1T-Sample` or the CC subset tarballs. | Store gzipped JSONL files under `data/raw/redpajama/*.jsonl.gz`. |
 | Code (Stack/Python mix) | Mostly MIT/Apache | Pull from `bigcode/starcoderdata` shards or permissively licensed repos. | Preserve LICENSE metadata per shard (`data/raw/code/LICENSES.md`). |
 
+Every corpus contribution is tracked in `data/manifest/refinedweb_full_manifest.json`. Regenerate or edit this manifest whenever the mixture changes so downstream runs can validate shard presence and licensing.
+
+To verify the manifest against local shards:
+
+```bash
+uv run python scripts/data/validate_mixture.py \
+  --manifest data/manifest/refinedweb_full_manifest.json \
+  --output data/mixtures/refinedweb_mix_manifest_report.json
+```
+
 All raw pulls should include a short README describing the source URL, date retrieved, and any filters applied. Update `docs/data_pipeline.md` whenever the mix changes so downstream users know which corpora are safe to redistribute.
 
 ## 1. Train tokenizer (multi-corpus manifest)
@@ -43,6 +53,33 @@ uv run python scripts/data/check_tokenizer.py \
 ```
 
 The command prints the SHA-256 digest and writes a JSON record (optional). Keep the expected hash in this doc so CI/scripts can assert integrity. Update the hash whenever the tokenizer is retrained.
+
+### Coverage sanity check
+Before publishing a tokenizer, capture coverage metrics on a representative sample:
+
+```bash
+uv run python scripts/data/check_tokenizer_coverage.py \
+  --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
+  --sample-file data/filtered/refinedweb_en_sample.txt \
+  --max-lines 5000 \
+  --output data/mixtures/refinedweb_mix_tokenizer_coverage.json
+```
+
+The script reports tokens/word, proportion of single-token words, and a histogram of piece lengths. Add the JSON to your release bundle so collaborators can verify coverage.
+
+#### Automated regression guard
+Add a regression check to CI or pre-release automation to ensure coverage does not drift:
+
+```bash
+uv run python scripts/checks/tokenizer_coverage_guard.py \
+  --baseline data/mixtures/refinedweb_mix_tokenizer_coverage.json \
+  --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model \
+  --sample-file data/filtered/refinedweb_en_sample.txt \
+  --max-lines 5000 \
+  --output data/mixtures/refinedweb_mix_tokenizer_coverage_latest.json
+```
+
+The guard fails if `avg_tokens_per_word` increases by more than `0.05` or if the single/two-token coverage drops by more than `2 %`. Adjust tolerances via CLI flags if a new tokenizer intentionally changes segmentation. Include the generated JSON in release bundles alongside the manifest validation report.
 
 ## 2. Shard mixture components
 

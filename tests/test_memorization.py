@@ -3,7 +3,7 @@ import torch
 from nested_learning.hope.block import HOPEBlockConfig
 from nested_learning.levels import LevelSpec
 from nested_learning.model import HOPEModel, ModelConfig
-from nested_learning.memorize import memorize_tokens, snapshot_state_dict
+from nested_learning.memorize import MemorizeConfig, memorize_tokens, snapshot_state_dict
 
 
 def _tiny_model() -> HOPEModel:
@@ -29,7 +29,8 @@ def test_memorize_tokens_updates_parameters() -> None:
     model = _tiny_model()
     baseline = snapshot_state_dict(model)
     tokens = torch.randint(0, model.config.vocab_size, (1, 8))
-    memorize_tokens(model, tokens, steps=2)
+    cfg = MemorizeConfig(enabled=True, steps=2)
+    memorize_tokens(model, tokens, cfg)
     changed = any(
         not torch.allclose(baseline[name], param.cpu(), atol=1e-6)
         for name, param in model.state_dict().items()
@@ -41,7 +42,28 @@ def test_memorize_tokens_can_be_reset() -> None:
     model = _tiny_model()
     baseline = snapshot_state_dict(model)
     tokens = torch.randint(0, model.config.vocab_size, (1, 8))
-    memorize_tokens(model, tokens, steps=1)
+    cfg = MemorizeConfig(enabled=True, steps=1)
+    memorize_tokens(model, tokens, cfg)
     model.load_state_dict(baseline)
+    for name, param in model.state_dict().items():
+        assert torch.allclose(baseline[name], param.cpu(), atol=1e-6)
+
+
+def test_memorize_respects_surprise_threshold() -> None:
+    model = _tiny_model()
+    baseline = snapshot_state_dict(model)
+    tokens = torch.randint(0, model.config.vocab_size, (1, 8))
+    cfg = MemorizeConfig(enabled=True, steps=1, surprise_threshold=1e6)
+    memorize_tokens(model, tokens, cfg)
+    for name, param in model.state_dict().items():
+        assert torch.allclose(baseline[name], param.cpu(), atol=1e-6)
+
+
+def test_memorize_paths_filter_blocks_updates() -> None:
+    model = _tiny_model()
+    baseline = snapshot_state_dict(model)
+    tokens = torch.randint(0, model.config.vocab_size, (1, 8))
+    cfg = MemorizeConfig(enabled=True, steps=1, paths=())
+    memorize_tokens(model, tokens, cfg)
     for name, param in model.state_dict().items():
         assert torch.allclose(baseline[name], param.cpu(), atol=1e-6)

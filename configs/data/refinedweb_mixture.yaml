@@ -1,0 +1,48 @@
+name: refinedweb_mix_v1
+tokenizer_output_dir: artifacts/tokenizer/refinedweb_mix
+datasets:
+  - name: refinedweb
+    dataset: text
+    split: train
+    text_column: text
+    data_files: data/filtered/refinedweb_en_full.txt
+    seq_len: 2048
+    sequences_per_shard: 2048
+    output_dir: data/shards/refinedweb
+    max_records: null
+  - name: books
+    dataset: text
+    split: train
+    text_column: text
+    data_files: data/filtered/wikipedia_en_full.txt
+    seq_len: 2048
+    sequences_per_shard: 2048
+    output_dir: data/shards/wikipedia
+    max_records: null
+  - name: c4
+    dataset: text
+    split: train
+    text_column: text
+    data_files: data/filtered/c4_en_full.txt
+    seq_len: 2048
+    sequences_per_shard: 2048
+    output_dir: data/shards/c4
+    max_records: null
+  - name: redpajama
+    dataset: text
+    split: train
+    text_column: text
+    data_files: data/filtered/redpajama_en_full.txt
+    seq_len: 2048
+    sequences_per_shard: 2048
+    output_dir: data/shards/redpajama
+    max_records: null
+  - name: code
+    dataset: text
+    split: train
+    text_column: text
+    data_files: data/filtered/code_en_full.txt
+    seq_len: 2048
+    sequences_per_shard: 2048
+    output_dir: data/shards/code
+    max_records: null

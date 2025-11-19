@@ -72,6 +72,9 @@ class CMS(nn.Module):
         self._chunk_buffers: Dict[str, list[dict[str, torch.Tensor]]] = {
             spec.name: [] for spec in self.level_specs
         }
+        self._pending_chunks: Dict[str, tuple[torch.Tensor, torch.Tensor] | None] = {
+            spec.name: None for spec in self.level_specs
+        }
         self.last_update_stats: Dict[str, Dict[str, float]] = {}
 
     def forward(
@@ -102,6 +105,9 @@ class CMS(nn.Module):
         ready: Dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         for spec in self.level_specs:
             name = spec.name
+            if self._pending_chunks[name] is not None:
+                ready[name] = self._pending_chunks[name]  # type: ignore[assignment]
+                continue
             block_input = inputs[name]
             block_output = outputs[name]
             delta_target = (
@@ -118,11 +124,24 @@ class CMS(nn.Module):
             chunk_size = spec.update_period
             if len(self._chunk_buffers[name]) < chunk_size:
                 continue
-            entries = [self._chunk_buffers[name].pop(0) for _ in range(chunk_size)]
+            entries = self._chunk_buffers[name][:chunk_size]
             chunk_inputs = self._pad_and_cat([entry["input"] for entry in entries])
             chunk_targets = self._pad_and_cat([entry["target"] for entry in entries])
-            ready[name] = (chunk_inputs, chunk_targets)
+            self._pending_chunks[name] = (chunk_inputs, chunk_targets)
+            ready[name] = self._pending_chunks[name]  # type: ignore[assignment]
         return ready
+
+    def consume_chunk(self, name: str) -> None:
+        spec = self._spec_map[name]
+        pending = self._pending_chunks.get(name)
+        if pending is None:
+            raise RuntimeError(f"No pending chunk to consume for level {name}")
+        entries = self._chunk_buffers[name]
+        chunk_size = spec.update_period
+        if len(entries) < chunk_size:
+            raise RuntimeError(f"Insufficient buffered entries to consume for level {name}")
+        del entries[:chunk_size]
+        self._pending_chunks[name] = None
 
     @staticmethod
     def _pad_and_cat(tensors: list[torch.Tensor]) -> torch.Tensor:

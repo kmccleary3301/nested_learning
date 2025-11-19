@@ -1,0 +1,3 @@
+this is a tiny corpus for tokenizer smoke tests.
+another sentence for the tokenizer.
+passkey models should tokenize prompts about nested learning hope titan cms.

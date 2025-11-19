@@ -1,0 +1,10 @@
+{
+  "piqa_accuracy": 0.59375,
+  "piqa_samples": 32,
+  "piqa_baseline_accuracy": 0.59375,
+  "piqa_memorize_accuracy": 0.59375,
+  "piqa_memorize_delta": 0.0,
+  "piqa_memorize_paths": "all",
+  "piqa_titan_mem_updates": 214.61288151843473,
+  "piqa_cms_fast_updates": 293.2037897591945
+}

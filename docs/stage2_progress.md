@@ -122,6 +122,11 @@ At this early stage both models perform similarly on the short zero-shot probe, 
   * Continual (`eval/continual_pilot_opt_muon_step5000.json`): CE ≈11.3 / 11.3 / 11.2 / 10.8.
 - **Takeaway:** Muon aggressively reduces continual loss (~4×) and boosts BoolQ/NIAH long-context retention at the expense of a slight PIQA dip. We’ll standardize on Muon for the resumed HOPE long run (step > 230 k) and keep the AdamW checkpoints as baseline references. Next action: re-launch the paused HOPE `pilot_full` tmux job with `optim.type=muon` and teach_scale=0.10 after the TITAN baseline frees GPU 0.
 
+### 2.10 Long-context diagnostics + forgetting plots
+- **Passkey eval:** `scripts/eval/passkey.py` now runs as part of the suite. Pilot step 230 k yields `eval/passkey_pilot_step230000.json` (64 prompts, filler = 256) with baseline vs memorize accuracy 0.484 and Titan updates ≈2.13. TITAN baseline outputs live in `eval/passkey_titan_step25000.json`.
+- **PG‑19 perplexity:** Streaming PG‑19 excerpts truncated to 2 048 tokens, memorization optional. Pilot checkpoint: `eval/pg19_pilot_step230000.json` (ppl ≈ 2.5 k). TITAN baseline: `eval/pg19_titan_step25000.json` (ppl ≈ 3.1 k).
+- **Continual forgetting plot:** multi-checkpoint run (`eval/continual_pilot_multi.json` covering steps 5 k/10 k/230 k) visualized via `scripts/eval/plot_forgetting.py` → `reports/plots/continual_pilot_refinedweb.png`. Use `HOPE_CONT_CHECKPOINTS="ckpt1 ckpt2 ..."` in `scripts/eval/run_pilot_suite.sh` to auto-generate plots for future checkpoints.
+
 ## 3. Recommended Workflow for Contributors
 1. **Environment** – `uv sync --all-extras && uv run bash scripts/data/run_sample.sh`
 2. **Distributed smoke** – `uv run torchrun --nproc_per_node=2 train_dist.py --config-name mid_stage2_smoke`
@@ -133,6 +138,25 @@ At this early stage both models perform similarly on the short zero-shot probe, 
 
 Documenting these steps here keeps everyone aligned while we chase full Stage 2 parity.
 
+### 2.9 Coverage guard + reporting automation (Nov 16)
+- Added `scripts/checks/tokenizer_coverage_guard.py`, which recomputes coverage on `data/filtered/refinedweb_en_sample.txt` and compares against the baseline JSON (`data/mixtures/refinedweb_mix_tokenizer_coverage.json`). The guard is referenced from `docs/data_pipeline.md` / `docs/release_checklist.md` and the latest run wrote `data/mixtures/refinedweb_mix_tokenizer_coverage_latest.json` (guard passed; stats unchanged).
+- Extended checkpoint reports beyond the core trio. New files cover `pilot_teach15_long`, `pilot_cms_nochunk`, `pilot_cms_sparse`, `pilot_selfmod_off`, `pilot_opt_muon`, and `pilot_opt_adamw`, each citing the relevant log + eval JSON so release bundles stay uniform.
+
+### 2.10 Checkpoint integrity sidecars (Nov 16)
+- All training entry points now emit `.meta.json`, `.sha256`, and `.yaml` files next to every checkpoint plus RNG state captures. Metadata includes checkpoint/config SHA256 digests, tokenizer hash, and pickled RNG states (Python, NumPy, torch CPU/CUDA) for reproducibility.
+- `scripts/checkpoint/verify.py` calls the shared verifier (`nested_learning.training.verify_checkpoint_integrity`) to recompute hashes and ensure RNG fields exist; `docs/release_checklist.md` now mandates running it before publishing artifacts.
+
+### 2.11 CI coverage for planner asks (Nov 16)
+- `.github/workflows/ci.yml` now has two additional jobs: `cpu-ddp-smoke` (runs `scripts/run_cpu_ddp_smoke.sh` to validate the gloo backend determinism path) and `passkey-smoke` (runs `scripts/tests/run_passkey_smoke.sh` which trains `pilot_smoke`, executes `scripts/eval/passkey.py` against the new `tests/data/tiny_tokenizer.model`, and asserts a positive memorization delta).
+- The helper script + tiny tokenizer assets live under `scripts/tests/` and `tests/data/`, so contributors can run `bash scripts/tests/run_passkey_smoke.sh` locally before sending PRs touching memorization code.
+
+### 2.12 Surprise gating + memorize-path controls (Nov 16)
+- Added global surprise-threshold wiring to HOPE/TITAN models (`ModelConfig.surprise_threshold`) and level filters so fast memories only update when teach-signal norms exceed the configured gate. Update stats now include `gate_hit` and the observed surprise value, and the verifier ensures checkpoints capture RNG/config hashes as before.
+- All memorization CLIs (`zeroshot`, `niah`, `continual`, `passkey`) gained `--memorize-paths` and `--memorize-surprise-threshold`. These feed into `MemorizeConfig` which now restricts updates to selected paths (e.g., Titan-only vs Titan+CMS fast) and temporarily overrides the surprise gate during eval. JSON outputs record both the active paths and surprise thresholds so downstream analysis can trace which memory systems were engaged.
+
+### 2.13 Pilot & TITAN relaunch with surprise gating (Nov 17)
+- Relaunched the HOPE pilot job on `cuda:1` using `nohup uv run python train.py --config-name pilot train.step_offset=231000 ...` so the Muon + surprise-gated configuration produces fresh checkpoints beyond the previous 246 k ceiling. PIDs live in `logs/pilot_relaunch_surprise.pid`, streaming output in `logs/pilot_relaunch_surprise.log`, and checkpoints continue under `artifacts/checkpoints/pilot_relaunch/step_*.pt`. Once the next snapshot (e.g., step 247 k+) lands we’ll repackage the pilot release and rerun the eval suite with the updated memorize metadata.
+- Relaunched the TITAN long baseline on `cuda:0` (same surprise threshold, Muon outer) via `nohup uv run python train.py --config-name mid_titan_baseline train.step_offset=7000 train.steps=25000 ...`. Outputs/ PIDs are captured in `logs/titan_relaunch_surprise.{log,pid}` and checkpoints land in `artifacts/checkpoints/mid_titan_long/step_*.pt`. Matching eval suites (zero-shot, NIAH, continual, passkey, PG‑19) will run as soon as the 10 k/25 k checkpoints arrive.
 ## 4. Release Checklist (current)
 *(Assumes only `cuda:1` is available—adjust `train.device` overrides accordingly.)*
 1. `uv sync --all-extras`

@@ -22,6 +22,7 @@ class LevelOptimizerManager:
         self.clock = LevelClock(config.specs)
         self.learning_rates: Dict[str, float] = {}
         self.optimizers = {}
+        self._last_metrics: Dict[str, Dict[str, float]] = {}
         for spec in config.specs:
             key = spec.optimizer_key or "default"
             optim_cfg = config.optimizer_configs.get(key, {"type": "deep_momentum", "params": {}})
@@ -59,7 +60,15 @@ class LevelOptimizerManager:
                 param.add_(update, alpha=-lr)
                 total_norm += grad.norm().item()
         self.clock.record_update(level)
+        metrics = getattr(optimizer, "last_metrics", None)
+        if metrics:
+            self._last_metrics[level] = dict(metrics)
+        else:
+            self._last_metrics[level] = {}
         return total_norm
 
     def tick(self) -> None:
         self.clock.tick()
+
+    def pop_last_metrics(self, level: str) -> Dict[str, float]:
+        return self._last_metrics.pop(level, {})

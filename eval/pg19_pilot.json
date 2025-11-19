@@ -1,0 +1,9 @@
+{
+  "samples": 32,
+  "tokens": 65504,
+  "ppl_base": 6474498048.0,
+  "ppl_memorize": 6471905280.0,
+  "ppl_delta": 2592768.0,
+  "memorize_paths": "titan,cms_fast",
+  "memorize_surprise_threshold": 0.02
+}

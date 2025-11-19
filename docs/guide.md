@@ -94,10 +94,11 @@ Document disk needs (≈2 TB for 100 B tokens) before launching large jobs.
 - **Artifacts:** Checkpoints land in `artifacts/checkpoints/<run>/step_xxxxxx.pt` with accompanying optimizer + clock states.
 
 ### Performance toggles
-- **Mixed precision:** `train.mixed_precision.enabled=true train.mixed_precision.dtype=bf16` (defaults to CPU-safe no-op).
-- **`torch.compile`:** `train.compile.enable=true train.compile.mode=max-autotune` wraps HOPE blocks in TorchDynamo for faster kernels.
-- **Fused optimizers:** keep `optim.type=adamw optim.fused=auto` (defaults) to pick CUDA fused kernels automatically.
-- **Muon optimizer:** `optim.type=muon optim.lr=2.5e-4 optim.weight_decay=0.01` routes ≥2D weights through `torch.optim.Muon` while embeddings/norms stay on AdamW. Works with mixed-precision + compile toggles.
+- **Mixed precision:** `train.mixed_precision.enabled=true train.mixed_precision.dtype=bf16` (already enabled for GPU configs).
+- **`torch.compile`:** `train.compile.enable=true train.compile.mode=max-autotune` wraps HOPE blocks in TorchDynamo for faster kernels (falls back automatically if kernels fail).
+- **Muon hybrid (default):** `optim.type=muon` routes ≥2D weights through `torch.optim.Muon` (bf16-safe) while embeddings/norms stick with AdamW. Training logs print `run_features` so you can confirm the Muon vs AdamW param split at launch.
+- **Fused AdamW fallback:** to disable Muon (e.g., CPU smoke), override with `optim.type=adamw optim.fused=auto`.
+- **Surprise gating:** configure `model.surprise_threshold=<float>` to gate TITAN/CMS updates on the mean teach-signal norm; eval CLIs expose `--memorize-surprise-threshold` to reuse the same gate.
 
 ---
 
@@ -126,6 +127,8 @@ Nested Learning inherits TITAN's ability to learn at inference time. All evaluat
 - `--memorize-steps N` to take N passes (default 1).
 - `--memorize-use-correct-answer` to inject the ground-truth choice during memorization for ablations.
 - `--memorize-no-reset` to keep memories across samples; omit for per-sample resets.
+- `--memorize-paths titan,cms_fast` to restrict which memory systems update.
+- `--memorize-surprise-threshold` to gate updates on surprise (teach-signal norm), matching the paper’s behavior.
 
 Use paired runs (with/without `--memorize`) to log adaptation gains; both JSON outputs live under `eval/` for comparison.
 

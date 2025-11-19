@@ -29,3 +29,37 @@ jobs:
 
       - name: Pytest
         run: uv run pytest
+
+  cpu-ddp-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      - name: CPU DDP smoke (gloo backend)
+        run: bash scripts/run_cpu_ddp_smoke.sh
+
+  passkey-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run synthetic passkey memorization test
+        run: bash scripts/tests/run_passkey_smoke.sh

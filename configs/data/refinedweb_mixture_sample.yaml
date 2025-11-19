@@ -1,0 +1,51 @@
+name: refinedweb_mix_sample
+tokenizer_output_dir: artifacts/tokenizer/refinedweb_mix
+datasets:
+  - name: refinedweb
+    dataset: HuggingFaceFW/fineweb
+    subset: sample-10BT
+    split: train
+    text_column: text
+    sample_limit: 5000
+    seq_len: 512
+    sequences_per_shard: 512
+    output_dir: data/shards/refinedweb_sample
+    max_records: 10000
+  - name: books
+    dataset: wikimedia/wikipedia
+    subset: 20231101.en
+    split: train
+    text_column: text
+    sample_limit: 2000
+    seq_len: 512
+    sequences_per_shard: 512
+    output_dir: data/shards/wikipedia_sample
+    max_records: 5000
+  - name: c4
+    dataset: allenai/c4
+    subset: en
+    split: train
+    text_column: text
+    sample_limit: 2000
+    seq_len: 512
+    sequences_per_shard: 512
+    output_dir: data/shards/c4_sample
+    max_records: 4000
+  - name: redpajama
+    dataset: cerebras/SlimPajama-627B
+    split: train
+    text_column: text
+    sample_limit: 2000
+    seq_len: 512
+    sequences_per_shard: 512
+    output_dir: data/shards/redpajama_sample
+    max_records: 4000
+  - name: code
+    dataset: codeparrot/codeparrot-clean-train
+    split: train
+    text_column: content
+    sample_limit: 2000
+    seq_len: 512
+    sequences_per_shard: 512
+    output_dir: data/shards/code_sample
+    max_records: 4000

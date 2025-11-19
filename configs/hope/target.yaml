@@ -13,6 +13,7 @@ model:
   dim: 1536
   num_layers: 32
   heads: 24
+  surprise_threshold: null
   titan_level:
     name: titan
     update_period: 32
@@ -40,30 +41,35 @@ model:
       params:
         beta: 0.9
         beta2: 0.999
+        variant: nl_l2_precond
     cms_fast_opt:
       type: deep_momentum
       lr: 3.0e-4
       params:
         beta: 0.9
         beta2: 0.999
+        variant: nl_l2_precond
     cms_mid_opt:
       type: deep_momentum
       lr: 2.5e-4
       params:
         beta: 0.9
         beta2: 0.999
+        variant: nl_l2_precond
     cms_slow_opt:
       type: deep_momentum
       lr: 2.0e-4
       params:
         beta: 0.9
         beta2: 0.999
+        variant: nl_l2_precond
     cms_anchor_opt:
       type: deep_momentum
       lr: 1.5e-4
       params:
         beta: 0.9
         beta2: 0.999
+        variant: nl_l2_precond
 
 data:
   source: mixture
@@ -95,6 +101,7 @@ train:
   device: "cuda:1"
   seed: 9001
   deterministic: false
+  step_offset: 0
   mixed_precision:
     enabled: true
     dtype: bf16
@@ -112,9 +119,13 @@ train:
     resume_tag: null
 
 optim:
-  type: adamw
+  type: muon
   lr: 1.5e-4
-  fused: auto
+  weight_decay: 0.02
+  momentum: 0.95
+  betas:
+    - 0.9
+    - 0.999
 
 logging:
   enabled: false

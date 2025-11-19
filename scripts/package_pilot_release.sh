@@ -10,7 +10,7 @@ set -euo pipefail
 RELEASE_DIR="artifacts/pilot_release"
 CHECKPOINT_DIR="artifacts/checkpoints/pilot"
 CONFIG_PATH="configs/pilot.yaml"
-LOG_GLOB="logs/pilot_train*.log"
+LOG_PATTERNS=( "logs/pilot_train*.log" "logs/pilot_train*.json" "logs/pilot_relaunch*.log" "logs/pilot_relaunch*.json" )
 METADATA_PATH="${RELEASE_DIR}/metadata.json"
 MANIFEST_PATH="${RELEASE_DIR}/MANIFEST.txt"
 
@@ -38,15 +38,23 @@ cp "${CONFIG_PATH}" "${RELEASE_DIR}/config.yaml"
 LOG_DEST="${RELEASE_DIR}/logs"
 mkdir -p "${LOG_DEST}"
 shopt -s nullglob
-for log_path in ${LOG_GLOB}; do
-  cp "${log_path}" "${LOG_DEST}/"
+for pattern in "${LOG_PATTERNS[@]}"; do
+  for log_path in ${pattern}; do
+    cp "${log_path}" "${LOG_DEST}/"
+  done
 done
 shopt -u nullglob
 
 # Update metadata stub with checkpoint information if present
 if [[ -f "${METADATA_PATH}" ]]; then
-  tmp=$(mktemp)
-  jq --arg ckpt "${CHECKPOINT_BASENAME}" '.checkpoint_step = $ckpt' "${METADATA_PATH}" > "${tmp}" && mv "${tmp}" "${METADATA_PATH}" || true
+  python - "$CHECKPOINT_BASENAME" "$METADATA_PATH" <<'PY' || true
+import json, sys, pathlib
+ckpt = sys.argv[1]
+path = pathlib.Path(sys.argv[2])
+meta = json.loads(path.read_text())
+meta["checkpoint_step"] = ckpt
+path.write_text(json.dumps(meta, indent=2))
+PY
 fi
 
 # Emit manifest with quick reference info
@@ -55,7 +63,7 @@ fi
   echo "======================"
   echo "Checkpoint: ${CHECKPOINT_BASENAME}"
   echo "Config: ${CONFIG_PATH}"
-  echo "Logs copied from: ${LOG_GLOB}"
+  echo "Logs copied from patterns: ${LOG_PATTERNS[*]}"
   date "+Packaged at: %Y-%m-%d %H:%M:%S"
 } > "${MANIFEST_PATH}"
 

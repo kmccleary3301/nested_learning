@@ -75,9 +75,12 @@ Developer checks:
   ```bash
   uv run bash scripts/run_cpu_ddp_smoke.sh
   ```
-- FSDP:
+- FSDP (see `docs/FSDP_SCALING_GUIDE.md` for VRAM/batch sizing):
   ```bash
-  torchrun --nproc_per_node=2 train_fsdp.py --config-name mid
+  # 760M run
+  torchrun --nproc_per_node=2 train_fsdp.py --config-name hope/mid_fsdp
+  # 1.3B run
+  torchrun --nproc_per_node=2 train_fsdp.py --config-name hope/target_fsdp
   ```
 - DeepSpeed (requires `deepspeed` installed separately):
   ```bash
@@ -129,7 +132,16 @@ Set `logging.enabled=true` in Hydra configs (or override via CLI) to send metric
     --config configs/hope/mid.yaml \
     --checkpoints checkpoints/mid/step_000050.pt checkpoints/mid/step_000100.pt \
     --segments-yaml configs/data/continual_segments_sample.yaml \
-    --batch-size 4 --max-batches 10
+    --batch-size 4 --max-batches 10 --memorize --memorize-steps 2
+  ```
+  Plot forgetting curves via `uv run python scripts/eval/plot_forgetting.py --continual-json eval/continual_mid.json`.
+- Long-context diagnostics:
+  ```bash
+  uv run python scripts/eval/passkey.py --config configs/hope/pilot.yaml --checkpoint artifacts/checkpoints/pilot/step_230000.pt \
+    --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --samples 64 --memorize
+
+  uv run python scripts/eval/pg19_perplexity.py --config configs/hope/pilot.yaml --checkpoint artifacts/checkpoints/pilot/step_230000.pt \
+    --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --max-samples 64
   ```
 
 Evaluation summaries are written to `eval/` alongside per-task JSON metrics.
@@ -143,24 +155,27 @@ uv run python scripts/eval/zeroshot.py \
   --memorize-steps 2 \
   --memorize-use-correct-answer \
   --memorize-no-reset  # optional: retain updates across samples
+  --memorize-paths titan,cms_fast \
+  --memorize-surprise-threshold 0.01
 ```
 - `--memorize` turns on the learner with one LMS step per example by default.
 - `--memorize-steps` controls the number of adaptation passes per prompt.
 - `--memorize-use-correct-answer` injects ground-truth text during memorization for ablations.
 - `--memorize-no-reset` carries memories across samples; omit it to reset every question.
+- `--memorize-paths` restricts which levels receive teach-signal updates (`titan`, `cms_fast`, or `all`).
+- `--memorize-surprise-threshold` gates updates on average teach-signal norm, matching the paper’s surprise trigger.
 
 Memorization metrics (baseline vs adaptive) are emitted alongside task accuracy for easy comparisons.
 
+## Releases
+Before tagging or announcing a new checkpoint, work through `docs/release_checklist.md` so the bundle includes manifest validation reports, tokenizer coverage JSON, zero-shot/NIAH/continual/passkey/PG-19 eval outputs, forgetting plots, and filled checkpoint reports.
+
 ## Performance & optimizer options
-- **Mixed precision:** enable bf16 autocast via `train.mixed_precision.enabled=true train.mixed_precision.dtype=bf16`.
-- **`torch.compile`:** accelerate attention/core loops by toggling `train.compile.enable=true train.compile.mode=max-autotune`.
-- **Fused AdamW:** default `optim.type=adamw optim.fused=auto` enables fused CUDA kernels when available.
-- **Muon optimizer:** route matrix weights through `torch.optim.Muon` while keeping embeddings/biases on AdamW:
-  ```bash
-  uv run python train.py --config-name pilot \
-    optim.type=muon optim.lr=2.5e-4 optim.weight_decay=0.01 \
-    train.mixed_precision.enabled=true train.compile.enable=true
-  ```
+- **Mixed precision:** enable bf16 autocast via `train.mixed_precision.enabled=true train.mixed_precision.dtype=bf16` (already enabled in pilot/mid/target configs).
+- **`torch.compile`:** accelerate attention/core loops by toggling `train.compile.enable=true train.compile.mode=max-autotune`; failure falls back to eager unless `train.compile.strict=true`.
+- **Muon hybrid (default):** all HOPE configs now set `optim.type=muon`, routing ≥2D tensors through PyTorch 2.9's Muon optimizer while embeddings/norms stay on AdamW. Training logs emit `optim.muon_param_elems` / `optim.adamw_param_elems` so you can confirm the split.
+- **Fused AdamW fallback:** override with `optim.type=adamw optim.fused=auto` if Muon is unavailable or if you want to compare against the AdamW ablation in `reports/ablations.md`.
+- **Surprise gating:** set `model.surprise_threshold=<float>` to gate all inner updates on the average teach-signal norm (mirrors the paper’s “surprise” trigger). Evaluation CLIs expose `--memorize-surprise-threshold` for ad-hoc gating.
 
 All Hydra knobs can be overridden from the CLI or composed via config groups (`configs/hope/*.yaml`). Use these flags in tandem with `scripts/run_e2e_smoke.sh` (automation) or `scripts/run_cpu_ddp_smoke.sh` (CPU-only determinism check) to validate releases quickly.
 
@@ -175,6 +190,7 @@ All Hydra knobs can be overridden from the CLI or composed via config groups (`c
 - `docs/stability_journal.md` – chronological notes on NaN fixes & teach-scale tuning.
 - `docs/future_directions.md` – prioritized roadmap after the initial release.
 - `reports/stage2_smoke.md` – exact commands/artifacts for the release-ready smoke workflow.
+- `docs/FSDP_SCALING_GUIDE.md` – dual-RTX 6000 Ada instructions for the mid/target FSDP configs.
 - `google_papers/` – PDFs/markdown of Nested Learning & TITAN papers.
 - `CHANGELOG.md` – user-facing changes per release.
 

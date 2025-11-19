@@ -46,6 +46,9 @@ _Draft covering work completed through 9 Nov 2025. This document is meant to acc
 
 Artifacts: `data/filtered/*_full.txt`, `data/shards/*_full`, stats in `data/mixtures/refinedweb_mix_full_shards.json`.
 
+- Manifest validation: `data/manifest/refinedweb_full_manifest.json` lists every corpus (shard dir, license, download URL). Running `uv run python scripts/data/validate_mixture.py --manifest ...` produces overlap and size stats (`data/mixtures/refinedweb_mix_manifest_report.json`) so we can spot missing/duplicate shards before training.
+- Tokenizer coverage: `scripts/data/check_tokenizer_coverage.py` now emits coverage JSON (`data/mixtures/refinedweb_mix_tokenizer_coverage.json`). On the filtered RefinedWeb sample the 32k unigram tokenizer averages 1.34 tokens/word with ~77% single-token words, confirming adequate coverage before scaling runs.
+
 ### 3.2 HOPE vs TITAN (single GPU, 220 steps)
 All runs below use batch size 4, optimizer LR 1e‑5, teach_scale 0.10, teach_clip 4.0, runtime schedule (warmup 60, decay 140→220). Commands launched via tmux to keep the CLI free.
 
@@ -103,7 +106,14 @@ Pilot PIQA example (32-sample subset, single GPU):
 
 At this scale, memorization neither helps nor hurts, but the infrastructure is in place to replicate the substantial gains reported in HOPE/TITAN once longer contexts and richer checkpoints are available.
 
-### 3.6 Pilot (3 B tokens) – 230 k-step snapshot
+### 3.6 Long-context diagnostics (pilot step 230k)
+- **Passkey retrieval (`eval/passkey_pilot_step230000.json`):** 64 prompts with 256 filler sentences each. Accuracy baseline vs memorize is flat at 0.484 while Titan updates average ~2.13 (CMS-fast disabled). This confirms the harness works but also shows we need longer training to see the passkey delta reported in the paper.
+- **PG-19 perplexity (`eval/pg19_pilot_step230000.json`):** Streaming PG-19 excerpts truncated to 2048 tokens yield PPL ≈ 2.5k for both baseline and memorize settings (4 samples). The script is part of the pilot suite so future checkpoints can report comparable long-form perplexities out-of-the-box.
+
+### 3.7 Continual forgetting plots
+`scripts/eval/continual.py` now records both baseline and memorize CE per segment. Running it on checkpoints `[5k, 10k, 230k]` and passing the JSON into `scripts/eval/plot_forgetting.py` produces `reports/plots/continual_pilot_refinedweb.png`, which shows continual CE dropping from ~48 at step 5k to ~8 at step 230k on the RefinedWeb segment (memorization on). These plots will accompany every checkpoint report going forward.
+
+### 3.8 Pilot (3 B tokens) – 230 k-step snapshot
 - **Config:** `configs/pilot.yaml` (dim 512, 12 layers, TITAN + CMS fast/mid/slow/ultra, teach_schedule warmup 2k → decay 120k→140k). Train batch = 6, seq_len = 2048, Muon optimizer, bf16 autocast + SDPA + `torch.compile`.
 - **Run status:** The HOPE pilot reached step 246 667 (≈3.0 B tokens). We package the step 230 000 checkpoint as the release artifact because it predates the LR cooldown and logged stable eval metrics.
 - **Metrics (memorization enabled, 256-sample cap per task):**
@@ -160,6 +170,20 @@ At this scale, memorization neither helps nor hurts, but the infrastructure is i
 2. **Eval Coverage:** Integrate full RAFT/ARC suite plus additional long-context datasets (Needle-in-a-Haystack 32k, PassKey tasks).
 3. **HPO:** Once stable runs exist, sweep teach_scale/clip, CMS depth, and self-mod learning rates to quantify HOPE vs TITAN gains.
 4. **Automation:** Add CI for data sampling + dual-GPU smoke to catch regressions, and consider nightly tmux scripts for longer training jobs.
+
+### 3.5 HOPE Pilot Relaunch (toward step 250 k, surprise-gated)
+
+- **Config:** `configs/pilot.yaml` with Muon outer optimizer, `nl_l2_precond` inner variant, `teach_scale=0.10`, `surprise_threshold=0.02`.
+- **Run:** resumed from step 231 k on `cuda:1` (`logs/pilot_relaunch_surprise.log`, PID 552171).
+- **Checkpoints:** intermediate relaunch snapshots under `artifacts/checkpoints/pilot_relaunch/` (e.g., `step_245000.pt`), verified via `scripts/checkpoint/verify.py`.
+- **Status:** training in progress while preparing this report; full eval suite will be re-run once the target 250 k checkpoint lands.
+
+### 3.6 TITAN Long Baseline Relaunch (toward step 25 k)
+
+- **Config:** `configs/mid_titan_baseline.yaml`, `teach_scale=0.10`, `surprise_threshold=0.02`.
+- **Run:** resumed from step 7 k on `cuda:0` (`logs/titan_relaunch_surprise.log`, PID 554029).
+- **Checkpoints:** long-run snapshots under `artifacts/checkpoints/mid_titan_long/` (e.g., `step_016000.pt`), with integrity checked by `scripts/checkpoint/verify.py`.
+- **Status:** training in progress; eval suite (zero-shot, NIAH, continual, passkey, PG‑19) queued for the 16 k and 25 k checkpoints using the same memorize-path/gating settings as HOPE.
 
 ---
 

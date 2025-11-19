@@ -1,0 +1,119 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/pilot/step_005000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 44.24760044642857,
+      "wikipedia_sample": 45.375970064823875,
+      "c4_sample": 44.95872179244129,
+      "redpajama_sample": 44.70617126345401
+    },
+    "segment_baseline_losses": {
+      "refinedweb_2018": 44.23934954439824,
+      "wikipedia_sample": 45.36217817392368,
+      "c4_sample": 44.94942056017612,
+      "redpajama_sample": 44.70034246575342
+    },
+    "segment_memorize_delta": {
+      "refinedweb_2018": -0.008250902030333407,
+      "wikipedia_sample": -0.013791890900193948,
+      "c4_sample": -0.009301232265165993,
+      "redpajama_sample": -0.005828797700587529
+    },
+    "memorize_stats": {
+      "refinedweb_2018": {
+        "titan_mem_updates": 1.613788730129727,
+        "cms_fast_updates": 0.0
+      },
+      "wikipedia_sample": {
+        "titan_mem_updates": 1.8479480545959177,
+        "cms_fast_updates": 0.0
+      },
+      "c4_sample": {
+        "titan_mem_updates": 1.4406822725594566,
+        "cms_fast_updates": 0.0
+      },
+      "redpajama_sample": {
+        "titan_mem_updates": 1.3893899804404555,
+        "cms_fast_updates": 0.0
+      }
+    }
+  },
+  {
+    "checkpoint": "artifacts/checkpoints/pilot/step_010000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 8.350521820725293,
+      "wikipedia_sample": 8.060312242004036,
+      "c4_sample": 8.085568613548801,
+      "redpajama_sample": 8.269488489557853
+    },
+    "segment_baseline_losses": {
+      "refinedweb_2018": 8.350520960738747,
+      "wikipedia_sample": 8.060311095355308,
+      "c4_sample": 8.085567896893346,
+      "redpajama_sample": 8.269487151801004
+    },
+    "segment_memorize_delta": {
+      "refinedweb_2018": -8.599865459757439e-07,
+      "wikipedia_sample": -1.1466487279676585e-06,
+      "c4_sample": -7.166554549797866e-07,
+      "redpajama_sample": -1.3377568492956016e-06
+    },
+    "memorize_stats": {
+      "refinedweb_2018": {
+        "titan_mem_updates": 0.3657227133185188,
+        "cms_fast_updates": 0.0
+      },
+      "wikipedia_sample": {
+        "titan_mem_updates": 0.37036076905133086,
+        "cms_fast_updates": 0.0
+      },
+      "c4_sample": {
+        "titan_mem_updates": 0.3642253975777976,
+        "cms_fast_updates": 0.0
+      },
+      "redpajama_sample": {
+        "titan_mem_updates": 0.37168583213599504,
+        "cms_fast_updates": 0.0
+      }
+    }
+  },
+  {
+    "checkpoint": "artifacts/checkpoints/pilot/step_230000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 8.13594605208843,
+      "wikipedia_sample": 7.762453704057608,
+      "c4_sample": 7.744226671431629,
+      "redpajama_sample": 8.051934157518957
+    },
+    "segment_baseline_losses": {
+      "refinedweb_2018": 8.13594590875734,
+      "wikipedia_sample": 7.762453608503547,
+      "c4_sample": 7.744226528100538,
+      "redpajama_sample": 8.051934348627078
+    },
+    "segment_memorize_delta": {
+      "refinedweb_2018": -1.433310909959573e-07,
+      "wikipedia_sample": -9.555406066397154e-08,
+      "c4_sample": -1.433310909959573e-07,
+      "redpajama_sample": 1.9110812132794308e-07
+    },
+    "memorize_stats": {
+      "refinedweb_2018": {
+        "titan_mem_updates": 0.14358223369094958,
+        "cms_fast_updates": 0.0
+      },
+      "wikipedia_sample": {
+        "titan_mem_updates": 0.15011811023973465,
+        "cms_fast_updates": 0.0
+      },
+      "c4_sample": {
+        "titan_mem_updates": 0.14206775680657913,
+        "cms_fast_updates": 0.0
+      },
+      "redpajama_sample": {
+        "titan_mem_updates": 0.14818353760242076,
+        "cms_fast_updates": 0.0
+      }
+    }
+  }
+]

@@ -26,6 +26,7 @@ dependencies = [
   "wandb>=0.18.0",
   "langdetect>=1.0.9",
   "typer>=0.12",
+  "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]

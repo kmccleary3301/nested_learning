@@ -11,6 +11,7 @@ model:
   dim: 768
   num_layers: 18
   heads: 12
+  surprise_threshold: 0.02
   titan_level:
     name: titan
     update_period: 16
@@ -59,6 +60,7 @@ train:
   device: "cuda:1"
   seed: 451
   deterministic: false
+  step_offset: 0
   mixed_precision:
     enabled: true
     dtype: bf16
@@ -80,3 +82,4 @@ logging:
   enabled: true
   backend: json
   path: logs/mid_titan_baseline.json
+  run_name: mid_titan_baseline

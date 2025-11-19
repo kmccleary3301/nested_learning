@@ -1,0 +1,7 @@
+{
+  "samples": 4,
+  "tokens": 8188,
+  "ppl_base": 2497.421875,
+  "ppl_memorize": 2497.421875,
+  "ppl_delta": 0.0
+}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Sequence
+from typing import Dict, Sequence, Set
 
 import torch
 import torch.nn as nn
@@ -34,6 +34,8 @@ class HOPEBlock(nn.Module):
         super().__init__()
         self.config = config
         self.last_update_stats: Dict[str, Dict[str, float]] = {}
+        self.surprise_threshold: float | None = None
+        self.allowed_levels: Set[str] | None = None
         self.attn = SelfAttention(AttentionConfig(dim=config.dim, heads=config.heads))
         titan_config = TitanMemoryConfig(
             dim=config.dim,
@@ -62,6 +64,7 @@ class HOPEBlock(nn.Module):
         x: torch.Tensor,
         *,
         teach_signal: torch.Tensor | None = None,
+        surprise_value: float | None = None,
     ) -> torch.Tensor:
         attn_out = self.attn(x)
         mem_out = self.titan_memory(attn_out)
@@ -69,19 +72,31 @@ class HOPEBlock(nn.Module):
         cms_result = self.cms(combined, return_intermediates=True)
         cms_out, cms_inputs, cms_outputs = cms_result
         if teach_signal is not None:
-            self._update_titan(attn_out, mem_out, teach_signal)
-            self._update_cms(cms_inputs, cms_outputs, teach_signal)
+            self._update_titan(attn_out, mem_out, teach_signal, surprise_value)
+            self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
         self.level_manager.tick()
         return cms_out
+
+    def set_surprise_threshold(self, threshold: float | None) -> None:
+        self.surprise_threshold = threshold
+
+    def set_allowed_levels(self, allowed: Set[str] | None) -> None:
+        self.allowed_levels = allowed.copy() if allowed is not None else None
 
     def _update_titan(
         self,
         attn_out: torch.Tensor,
         mem_out: torch.Tensor,
         teach_signal: torch.Tensor,
+        surprise_value: float | None,
     ) -> None:
         level_name = self.config.titan_level.name
+        if not self._is_level_allowed("titan"):
+            return
         if not self.level_manager.should_update(level_name):
+            return
+        if not self._passes_surprise(surprise_value):
+            self._record_gate(level_name, hit=False)
             return
         pooled_key = attn_out.mean(dim=1)
         pooled_value = mem_out.mean(dim=1)
@@ -98,13 +113,19 @@ class HOPEBlock(nn.Module):
             prediction = self.titan_memory(query)
             loss = F.mse_loss(prediction, target)
         magnitude = self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
-        self.last_update_stats[f"titan.{level_name}"] = {"grad_norm": magnitude}
+        extra_metrics = self.level_manager.pop_last_metrics(level_name)
+        stats = {"grad_norm": magnitude, "gate_hit": 1.0}
+        if surprise_value is not None:
+            stats["surprise_value"] = surprise_value
+        stats.update(extra_metrics)
+        self.last_update_stats[f"titan.{level_name}"] = stats
 
     def _update_cms(
         self,
         cms_inputs: dict[str, torch.Tensor],
         cms_outputs: dict[str, torch.Tensor],
         teach_signal: torch.Tensor,
+        surprise_value: float | None,
     ) -> None:
         delta = teach_signal.detach().mean(dim=1, keepdim=True)
         error_signals = {spec.name: delta for spec in self.config.cms_levels}
@@ -115,7 +136,12 @@ class HOPEBlock(nn.Module):
         )
         for spec in self.config.cms_levels:
             level_name = spec.name
+            if not self._is_level_allowed(level_name):
+                continue
             if not self.level_manager.should_update(level_name):
+                continue
+            if not self._passes_surprise(surprise_value):
+                self._record_gate(level_name, hit=False)
                 continue
             chunk = chunk_map.get(level_name)
             if chunk is None:
@@ -132,13 +158,38 @@ class HOPEBlock(nn.Module):
                 loss,
                 context=context_vec,
             )
+            extra_metrics = self.level_manager.pop_last_metrics(level_name)
             stats_payload = {
                 "grad_norm": magnitude,
                 "chunk_samples": float(chunk_inputs.shape[0]),
+                "gate_hit": 1.0,
             }
+            if surprise_value is not None:
+                stats_payload["surprise_value"] = surprise_value
+            stats_payload.update(extra_metrics)
             self.last_update_stats[f"cms.{level_name}"] = stats_payload
+            self.cms.consume_chunk(level_name)
 
     def pop_update_stats(self) -> Dict[str, Dict[str, float]]:
         stats = self.last_update_stats
         self.last_update_stats = {}
         return stats
+
+    def _passes_surprise(self, surprise_value: float | None) -> bool:
+        if self.surprise_threshold is None:
+            return True
+        if surprise_value is None:
+            return False
+        return surprise_value >= self.surprise_threshold
+
+    def _is_level_allowed(self, level_name: str) -> bool:
+        if self.allowed_levels is None:
+            return True
+        return level_name in self.allowed_levels or (
+            level_name.startswith("titan") and "titan" in self.allowed_levels
+        )
+
+    def _record_gate(self, level_name: str, *, hit: bool) -> None:
+        stats_key = f"gate.{level_name}"
+        self.last_update_stats.setdefault(stats_key, {})
+        self.last_update_stats[stats_key]["gate_hit"] = 1.0 if hit else 0.0

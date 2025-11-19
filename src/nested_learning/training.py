@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import base64
+import json
+import os
+import pickle
+import random
 from contextlib import nullcontext
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Tuple
-import random
 
 import numpy as np
 import torch
@@ -21,7 +26,7 @@ from .data import (
     collate_batch,
 )
 from .levels import LevelSpec
-from .logging_utils import NullLogger, init_logger
+from .logging_utils import BaseLogger, NullLogger, init_logger
 from .model import HOPEModel, ModelConfig
 from .titan.model import TitanOnlyModel, TitanOnlyModelConfig
 
@@ -81,6 +86,7 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         teach_scale=teach_scale,
         teach_clip=teach_clip,
         teach_schedule=teach_schedule,
+        gradient_checkpointing=model_cfg.get("gradient_checkpointing", False),
     )
     return HOPEModel(hope_cfg)
 
@@ -186,6 +192,19 @@ def compute_teach_signal(model: torch.nn.Module, logits: torch.Tensor, tokens: t
     return torch.cat([grad, pad], dim=1)
 
 
+def _checksum_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    digest = sha256()
+    with candidate.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def maybe_save_checkpoint(
     cfg: DictConfig,
     model: torch.nn.Module,
@@ -195,6 +214,7 @@ def maybe_save_checkpoint(
     total_steps: int,
     distributed: bool,
     dist_ctx: DistributedContext | None,
+    step_offset: int = 0,
 ) -> None:
     ckpt_cfg = cfg.train.get("checkpoint")
     if not ckpt_cfg or not ckpt_cfg.get("enable", False):
@@ -209,18 +229,23 @@ def maybe_save_checkpoint(
         return
     ckpt_dir = Path(ckpt_cfg.get("dir", "checkpoints/default"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = ckpt_dir / f"step_{step + 1:06d}.pt"
+    global_step = step + 1 + int(step_offset)
+    ckpt_path = ckpt_dir / f"step_{global_step:06d}.pt"
+    tmp_path = ckpt_path.with_suffix(".tmp")
+    resolved_cfg = OmegaConf.to_container(cfg, resolve=True)
     state = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "step": step + 1,
-        "config": OmegaConf.to_container(cfg, resolve=True),
+        "config": resolved_cfg,
     }
-    torch.save(state, ckpt_path)
+    torch.save(state, tmp_path)
+    os.replace(tmp_path, ckpt_path)
+    write_checkpoint_metadata(cfg, ckpt_path, global_step)
     prefix = "[checkpoint]"
     if distributed and dist_ctx is not None:
         prefix = f"[checkpoint rank={dist_ctx.rank}]"
-    print(f"{prefix} saved {ckpt_path}")
+    print(f"{prefix} saved {ckpt_path} (global_step={global_step})")
 
 
 def run_training_loop(
@@ -263,6 +288,7 @@ def run_training_loop(
     logger = init_logger(getattr(cfg, "logging", None), cfg)
     if distributed and dist_ctx is not None and dist_ctx.rank != 0:
         logger = NullLogger()
+    _log_run_features(logger, base_model, cfg, optimizer, device)
     steps = cfg.train.steps
     log_interval = cfg.train.get("log_interval", 1)
     step_iter = iter(dataloader)
@@ -314,6 +340,7 @@ def run_training_loop(
             total_steps=steps,
             distributed=distributed,
             dist_ctx=dist_ctx,
+            step_offset=int(cfg.train.get("step_offset", 0) or 0),
         )
     logger.finish()
     return metrics
@@ -433,7 +460,9 @@ def _build_muon_optimizer(model: torch.nn.Module, optimizer_cfg: DictConfig, *, 
     if fused:
         adamw_kwargs["fused"] = True
     adamw_opt = torch.optim.AdamW(adamw_params, **adamw_kwargs) if adamw_params else None
-    return _HybridOptimizer(muon_opt, adamw_opt)
+    muon_elems = int(sum(p.numel() for p in muon_params))
+    adamw_elems = int(sum(p.numel() for p in adamw_params))
+    return _HybridOptimizer(muon_opt, adamw_opt, muon_elems, adamw_elems)
 
 
 def _is_muon_candidate(name: str, param: torch.nn.Parameter) -> bool:
@@ -450,9 +479,13 @@ class _HybridOptimizer:
         self,
         muon_opt: torch.optim.Optimizer | None,
         adamw_opt: torch.optim.Optimizer | None,
+        muon_param_elems: int,
+        adamw_param_elems: int,
     ):
         self.muon_opt = muon_opt
         self.adamw_opt = adamw_opt
+        self.muon_param_elems = muon_param_elems
+        self.adamw_param_elems = adamw_param_elems
 
     def zero_grad(self) -> None:
         if self.muon_opt:
@@ -486,6 +519,118 @@ class _HybridOptimizer:
         if self.adamw_opt:
             groups.extend(self.adamw_opt.param_groups)
         return groups
+
+    def get_param_split(self) -> dict[str, int]:
+        return {
+            "muon": self.muon_param_elems,
+            "adamw": self.adamw_param_elems,
+        }
+
+
+def _log_run_features(
+    logger: BaseLogger,
+    model: HOPEModel,
+    cfg: DictConfig,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> None:
+    mp_cfg = cfg.train.get("mixed_precision", {})
+    compile_cfg = cfg.train.get("compile", {})
+    features: dict[str, object] = {
+        "train.mixed_precision_enabled": bool(mp_cfg.get("enabled", False)),
+        "train.mixed_precision_dtype": str(mp_cfg.get("dtype", "bf16")),
+        "train.compile_enabled": bool(compile_cfg.get("enable", False)),
+        "train.compile_mode": str(compile_cfg.get("mode", "default")) if compile_cfg else "default",
+        "attention.flash_enabled": _detect_flash_attention(model),
+        "device": device.type,
+    }
+    split_fn = getattr(optimizer, "get_param_split", None)
+    if callable(split_fn):
+        split = split_fn()
+        features["optim.muon_param_elems"] = int(split.get("muon", 0))
+        features["optim.adamw_param_elems"] = int(split.get("adamw", 0))
+    logger.log(features, step=-1)
+    print(f"[train] run_features {features}")
+
+
+def _detect_flash_attention(model: HOPEModel) -> bool:
+    blocks = getattr(model, "blocks", [])
+    for block in blocks:
+        attn = getattr(block, "attn", None)
+        config = getattr(attn, "config", None)
+        if config is not None and hasattr(config, "use_flash"):
+            return bool(config.use_flash)
+    return False
+
+
+def write_checkpoint_metadata(cfg: DictConfig, ckpt_path: Path, step: int) -> None:
+    config_yaml = OmegaConf.to_yaml(cfg)
+    config_path = ckpt_path.with_suffix(".yaml")
+    config_path.write_text(config_yaml)
+    config_hash = sha256(config_yaml.encode("utf-8")).hexdigest()
+    ckpt_hash = _checksum_path(str(ckpt_path))
+    sha_path = ckpt_path.with_suffix(".sha256")
+    if ckpt_hash:
+        sha_path.write_text(f"{ckpt_hash}  {ckpt_path.name}\n")
+    tokenizer_path = cfg.data.get("tokenizer_path") if hasattr(cfg, "data") else None
+    metadata = {
+        "step": step,
+        "checkpoint_sha256": ckpt_hash,
+        "config_sha256": config_hash,
+        "tokenizer_hash": _checksum_path(tokenizer_path) if tokenizer_path else None,
+        "config_path": str(config_path),
+        "rng_states": _capture_rng_states(),
+    }
+    ckpt_path.with_suffix(".meta.json").write_text(json.dumps(metadata, indent=2))
+
+
+def verify_checkpoint_integrity(ckpt_path: Path) -> Dict[str, object]:
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint {ckpt_path} not found")
+    meta_path = ckpt_path.with_suffix(".meta.json")
+    if not meta_path.exists():
+        raise FileNotFoundError(f"Metadata file {meta_path} missing")
+    metadata = json.loads(meta_path.read_text())
+    computed_sha = _checksum_path(str(ckpt_path))
+    recorded_sha = metadata.get("checkpoint_sha256")
+    if recorded_sha and computed_sha and recorded_sha != computed_sha:
+        raise ValueError(f"Checkpoint SHA mismatch: recorded {recorded_sha} vs computed {computed_sha}")
+    sha_file = ckpt_path.with_suffix(".sha256")
+    if sha_file.exists() and computed_sha:
+        recorded_line = sha_file.read_text().strip().split()
+        if recorded_line:
+            recorded = recorded_line[0]
+            if recorded != computed_sha:
+                raise ValueError(f".sha256 mismatch: {recorded} vs {computed_sha}")
+    config_path = ckpt_path.with_suffix(".yaml")
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file {config_path} missing")
+    config_hash = sha256(config_path.read_text().encode("utf-8")).hexdigest()
+    recorded_cfg_hash = metadata.get("config_sha256")
+    if recorded_cfg_hash and recorded_cfg_hash != config_hash:
+        raise ValueError(f"Config SHA mismatch: recorded {recorded_cfg_hash} vs computed {config_hash}")
+    if "rng_states" not in metadata:
+        raise ValueError("Metadata missing rng_states")
+    return metadata
+
+
+def _capture_rng_states() -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "python": _encode_pickle(random.getstate()),
+        "numpy": _encode_pickle(np.random.get_state()),
+        "torch": _tensor_state_to_hex(torch.random.get_rng_state()),
+    }
+    if torch.cuda.is_available():
+        payload["torch_cuda"] = [_tensor_state_to_hex(state) for state in torch.cuda.get_rng_state_all()]  # type: ignore[attr-defined]
+    return payload
+
+
+def _encode_pickle(obj: object) -> str:
+    return base64.b64encode(pickle.dumps(obj)).decode("ascii")
+
+
+def _tensor_state_to_hex(state: torch.Tensor) -> str:
+    return state.cpu().numpy().tobytes().hex()
 
 
 def _seed_everything(seed: int, *, deterministic: bool = False) -> None:

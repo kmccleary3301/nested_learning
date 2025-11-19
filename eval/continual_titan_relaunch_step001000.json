@@ -1,0 +1,41 @@
+[
+  {
+    "checkpoint": "artifacts/checkpoints/mid_titan_long/step_001000.pt",
+    "segment_losses": {
+      "refinedweb_2018": 42.24322330601761,
+      "wikipedia_sample": 41.00887353228963,
+      "c4_sample": 39.92439552501223,
+      "redpajama_sample": 41.27286761558219
+    },
+    "segment_baseline_losses": {
+      "refinedweb_2018": 42.24322330601761,
+      "wikipedia_sample": 41.00887353228963,
+      "c4_sample": 39.92439552501223,
+      "redpajama_sample": 41.27286761558219
+    },
+    "segment_memorize_delta": {
+      "refinedweb_2018": 0.0,
+      "wikipedia_sample": 0.0,
+      "c4_sample": 0.0,
+      "redpajama_sample": 0.0
+    },
+    "memorize_stats": {
+      "refinedweb_2018": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      },
+      "wikipedia_sample": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      },
+      "c4_sample": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      },
+      "redpajama_sample": {
+        "titan_mem_updates": 0.0,
+        "cms_fast_updates": 0.0
+      }
+    }
+  }
+]

@@ -1,0 +1,9 @@
+segments:
+  - name: refinedweb_2018
+    shards_dir: data/shards/refinedweb_sample
+  - name: wikipedia_sample
+    shards_dir: data/shards/wikipedia_sample
+  - name: c4_sample
+    shards_dir: data/shards/c4_sample
+  - name: redpajama_sample
+    shards_dir: data/shards/redpajama_sample

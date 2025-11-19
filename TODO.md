@@ -39,3 +39,28 @@
 - [x] Run CMS sparse-chunk experiment, package checkpoint (`artifacts/checkpoints/pilot_cms_sparse/step_005000.pt`), and produce evals (`eval/*_pilot_cms_sparse_step5000.json`).
 - [x] Launch optimizer ablation comparing Muon hybrid vs fused AdamW on pilot-scale smoke (5–10 k steps) and archive eval metrics.
 - [x] Roll the new CMS + optimizer findings into `reports/ablations.md`, `docs/stage2_progress.md`, and outline the resulting Stage 2 training plan updates.
+
+## Planner Follow-up (P2)
+- [x] Manifest validation report (`scripts/data/validate_mixture.py`) + token overlap stats.
+- [x] Tokenizer coverage JSON via `scripts/data/check_tokenizer_coverage.py` + regression guard (`scripts/checks/tokenizer_coverage_guard.py`).
+- [x] Extend eval suite with passkey, PG‑19, and continual forgetting plots (see `scripts/eval/run_pilot_suite.sh` + `reports/plots/` output).
+- [x] Generate long-context/continual eval artifacts for pilot & TITAN checkpoints (`eval/passkey_*`, `eval/pg19_*`, `eval/continual_*`).
+- [x] Fill checkpoint reports (`reports/checkpoints/pilot_step230000.md`, `.../titan_step25000.md`, `.../pilot_teach05_long.md`, CMS variants, optimizer ablations, self-mod off).
+- [x] Run the same reporting workflow for future checkpoints (teach15 long, CMS sparse/no chunk, optimizer ablations) before publishing.
+
+## Planner Follow-up (P1)
+- [x] Make Muon the default outer optimizer (pilot/mid/target configs), log Muon vs AdamW param counts, and confirm bf16/SDPA/compile flags in training logs.
+- [x] Finalize FSDP/ZeRO configs for 760 M / 1.3 B (with grad checkpointing + VRAM notes) and document usage.
+- [x] Implement atomic checkpoint sidecars (SHA256, RNG state, tokenizer hash) plus a strict `scripts/checkpoint/verify.py`.
+- [x] Extend CI with CPU DDP determinism smoke + synthetic passkey memorization test.
+
+## Stage 2 – Execution Sprint (Nov 17)
+- [x] Relaunch HOPE pilot run on `cuda:1` (Muon + surprise gating) and produce fresh checkpoints/logs.
+  - Status (Nov 18): run completed/terminated by user request to free GPUs. Last logged train step ≈246 150 (global_step ≈477 000); latest checkpoint on disk `artifacts/checkpoints/pilot_relaunch/step_477000.pt` (to be verified/packaged later).
+- [ ] Package the new pilot checkpoint via `scripts/package_pilot_release.sh` and rerun the full eval suite (zeroshot/NIAH/continual/passkey/PG19) with memorize path/threshold metadata.
+  - Ready: checkpoint report stub at `reports/checkpoints/pilot_relaunch_step245000.md` (will be updated to final step); eval command to use `MEMORIZE_PATHS=titan,cms_fast`, `MEMORIZE_SURPRISE_THRESHOLD=0.02`.
+- [x] Restart TITAN long baseline, mirror the eval suite, and record surprise gating stats.
+  - Status (Nov 18): long run finished earlier (PID exited). Latest checkpoint: `artifacts/checkpoints/mid_titan_long/step_032000.pt` (global_step 32 000, to be verified/packaged).
+- [ ] Run the mid-scale FSDP config (`configs/hope/mid_fsdp.yaml`), monitor VRAM, and archive checkpoints/logs.
+- [ ] Update `reports/checkpoints/` + `reports/ablations.md` with the new HOPE/TITAN results (include memorize paths/surprise thresholds).
+- [ ] Refresh `docs/stage2_progress.md`, `docs/experiments_report.md`, and `docs/stage2_plan.md` with the latest execution status and next scaling steps.

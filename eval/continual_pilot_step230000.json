@@ -2,10 +2,40 @@
   {
     "checkpoint": "artifacts/checkpoints/pilot/step_230000.pt",
     "segment_losses": {
-      "refinedweb_2018": 8.061459917938173,
-      "wikipedia_sample": 7.788808421752691,
-      "c4_sample": 7.676290959248104,
-      "redpajama_sample": 7.9466852774125485
+      "refinedweb_2018": 8.065531237577972,
+      "wikipedia_sample": 7.796267658390411,
+      "c4_sample": 7.68133831584057,
+      "redpajama_sample": 7.9526173451642
+    },
+    "segment_baseline_losses": {
+      "refinedweb_2018": 8.065531357020548,
+      "wikipedia_sample": 7.796267897275563,
+      "c4_sample": 7.68133826806354,
+      "redpajama_sample": 7.9526173451642
+    },
+    "segment_memorize_delta": {
+      "refinedweb_2018": 1.1944257671814285e-07,
+      "wikipedia_sample": 2.3888515165992885e-07,
+      "c4_sample": -4.777703033198577e-08,
+      "redpajama_sample": 0.0
+    },
+    "memorize_stats": {
+      "refinedweb_2018": {
+        "titan_mem_updates": 0.29348359665116774,
+        "cms_fast_updates": 0.0
+      },
+      "wikipedia_sample": {
+        "titan_mem_updates": 0.29477991902535194,
+        "cms_fast_updates": 0.0
+      },
+      "c4_sample": {
+        "titan_mem_updates": 0.28394374698655866,
+        "cms_fast_updates": 0.0
+      },
+      "redpajama_sample": {
+        "titan_mem_updates": 0.2949711520357745,
+        "cms_fast_updates": 0.0
+      }
     }
   }
 ]
