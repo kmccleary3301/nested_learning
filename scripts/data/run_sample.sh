@@ -68,6 +68,18 @@ if [[ ! -f "data/filtered/code_en_sample.txt" ]]; then
     --output-path data/filtered/code_en_sample.txt --force-exit
 fi
 
+# Train tokenizer if it doesn't exist 
+if [[ ! -f "${TOKENIZER_MODEL}" ]]; then
+  echo "[Data] Training tokenizer (vocab_size=32000, model_type=unigram)"
+  uv run python scripts/data/train_tokenizer.py \
+    --manifest configs/data/refinedweb_mixture_sample.yaml \
+    --vocab-size 32000 \
+    --output-dir artifacts/tokenizer/refinedweb_mix \
+    --log-file data/mixtures/refinedweb_mix_tokenizer.json
+else
+  echo "[Data] Tokenizer already exists at ${TOKENIZER_MODEL}"
+fi
+
 echo "[Data] Sharding filtered samples"
 uv run python scripts/data/process_mixture.py \
   configs/data/refinedweb_mixture_filtered.yaml \
