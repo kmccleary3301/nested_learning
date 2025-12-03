@@ -71,6 +71,7 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
             teach_scale=teach_scale,
             teach_clip=teach_clip,
             teach_schedule=teach_schedule,
+            freeze_backbone=model_cfg.get("freeze_backbone", False),
         )
         return TitanOnlyModel(titan_cfg)
     titan_spec = LevelSpec(**model_cfg.titan_level)
@@ -87,6 +88,7 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         teach_clip=teach_clip,
         teach_schedule=teach_schedule,
         gradient_checkpointing=model_cfg.get("gradient_checkpointing", False),
+        freeze_backbone=model_cfg.get("freeze_backbone", False),
     )
     return HOPEModel(hope_cfg)
 

@@ -25,6 +25,7 @@ class ModelConfig:
     teach_schedule: Dict[str, float] | None = None
     gradient_checkpointing: bool = False
     surprise_threshold: float | None = None
+    freeze_backbone: bool = False
 
 
 class HOPEModel(nn.Module):
@@ -53,6 +54,8 @@ class HOPEModel(nn.Module):
         self.lm_head.weight = self.embed.weight
         self._latest_update_metrics: Dict[str, float] = {}
         self.set_surprise_threshold(self._surprise_threshold)
+        if config.freeze_backbone:
+            self.freeze_backbone()
 
     def set_teach_runtime(self, *, scale: float | None = None, clip: float | None = None) -> None:
         if scale is not None:
@@ -124,3 +127,19 @@ class HOPEModel(nn.Module):
         metrics = self._latest_update_metrics
         self._latest_update_metrics = {}
         return metrics
+
+    def freeze_backbone(self) -> None:
+        """
+        Freeze the shared transformer spine (embeddings, attention blocks, norm, LM head).
+        HOPE/TITAN/CMS memories remain trainable for adapter-style finetuning.
+        """
+        for p in self.embed.parameters():
+            p.requires_grad = False
+        for p in self.norm.parameters():
+            p.requires_grad = False
+        for p in self.lm_head.parameters():
+            p.requires_grad = False
+        for block in self.blocks:
+            if hasattr(block, "attn"):
+                for p in block.attn.parameters():
+                    p.requires_grad = False

@@ -11,6 +11,7 @@ MIXTURE_CONFIG=${MIXTURE_CONFIG:-configs/data/refinedweb_mixture_full.yaml}
 SHARD_LOG=${SHARD_LOG:-data/mixtures/refinedweb_mix_full_shards.json}
 FORCE_FILTER=${FORCE_FILTER:-0}
 RETRAIN_TOKENIZER=${RETRAIN_TOKENIZER:-0}
+FALLBACK_SPLIT=${FALLBACK_SPLIT:-test}
 
 mkdir -p data/filtered data/shards artifacts/tokenizer data/mixtures
 
@@ -33,23 +34,35 @@ filter_dataset() {
   fi
 
   echo "[Data][${name}] Filtering ${dataset}${subset:+/${subset}} -> ${output}"
-  cmd=(uv run python scripts/data/filter_corpus.py
-    --dataset "${dataset}"
-    --split "${split}"
-    --text-column "${text_column}"
-    --target-lang "${target_lang}"
-    --lang-threshold "${lang_threshold}"
-    --min-chars "${min_chars}"
-    --max-chars "${max_chars}"
-    --output-path "${output}"
-    --force-exit)
-  if [[ -n "${subset}" ]]; then
-    cmd+=(--subset "${subset}")
+  run_filter() {
+    local split_value=$1
+    cmd=(uv run python scripts/data/filter_corpus.py
+      --dataset "${dataset}"
+      --split "${split_value}"
+      --text-column "${text_column}"
+      --target-lang "${target_lang}"
+      --lang-threshold "${lang_threshold}"
+      --min-chars "${min_chars}"
+      --max-chars "${max_chars}"
+      --output-path "${output}"
+      --force-exit)
+    if [[ -n "${subset}" ]]; then
+      cmd+=(--subset "${subset}")
+    fi
+    if [[ -n "${limit}" ]]; then
+      cmd+=(--limit "${limit}")
+    fi
+    "${cmd[@]}"
+  }
+
+  if ! run_filter "${split}"; then
+    if [[ -n "${FALLBACK_SPLIT}" && "${FALLBACK_SPLIT}" != "${split}" ]]; then
+      echo "[Data][${name}] Primary split '${split}' failed; retrying with fallback '${FALLBACK_SPLIT}'"
+      run_filter "${FALLBACK_SPLIT}"
+    else
+      exit 1
+    fi
   fi
-  if [[ -n "${limit}" ]]; then
-    cmd+=(--limit "${limit}")
-  fi
-  "${cmd[@]}"
 }
 
 echo "[Data] === Stage 1: Filtering corpora ==="

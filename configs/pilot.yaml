@@ -16,6 +16,7 @@ model:
   teach_scale: 0.10
   teach_clip: 5.0
   surprise_threshold: 0.02
+  freeze_backbone: false
   self_mod_lr: 0.001
   teach_schedule:
     warmup_steps: 2000

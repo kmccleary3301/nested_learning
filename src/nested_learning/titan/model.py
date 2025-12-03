@@ -29,6 +29,7 @@ class TitanOnlyModelConfig:
     self_mod_hidden: int = 4
     self_mod_lr: float = 1e-3
     surprise_threshold: float | None = None
+    freeze_backbone: bool = False
 
 
 class TitanOnlyBlock(nn.Module):
@@ -131,6 +132,8 @@ class TitanOnlyModel(nn.Module):
         self._surprise_threshold: float | None = None
         self._updates_enabled: bool = True
         self.set_surprise_threshold(config.surprise_threshold)
+        if config.freeze_backbone:
+            self.freeze_backbone()
 
     def set_teach_runtime(self, *, scale: float | None = None, clip: float | None = None) -> None:
         if scale is not None:
@@ -178,3 +181,18 @@ class TitanOnlyModel(nn.Module):
             x = block(x, teach_signal=scaled_signal)  # type: ignore[arg-type]
         x = self.norm(x)
         return self.lm_head(x)
+
+    def freeze_backbone(self) -> None:
+        """
+        Freeze shared transformer components; leave TITAN memory/trainable paths active.
+        """
+        for p in self.embed.parameters():
+            p.requires_grad = False
+        for p in self.norm.parameters():
+            p.requires_grad = False
+        for p in self.lm_head.parameters():
+            p.requires_grad = False
+        for block in self.blocks:
+            if hasattr(block, "attn"):
+                for p in block.attn.parameters():
+                    p.requires_grad = False

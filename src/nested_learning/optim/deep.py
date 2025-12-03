@@ -56,11 +56,14 @@ class DeepMomentum(nn.Module):
             ctx = ctx.reshape(-1, ctx.shape[-1]).mean(dim=0)
         ctx_norm = torch.norm(ctx)
         metrics["ctx_norm"] = ctx_norm.item()
-        
-        # Fix: Removed orthogonalization which was zeroing out updates parallel to context.
-        # For now, we return the gradient as-is (Standard GD behavior).
-        # Future work: Implement exact Eq 29 update: W_new = W_old(I - xx^T) - eta*grad
-        
+
+        if ctx_norm > 0:
+            unit = ctx / (ctx_norm + self.eps)
+            # Project grad orthogonal to context (rank-1 projector).
+            projection = (grad * unit).sum(dim=-1, keepdim=True) * unit
+            update = grad - projection
+            metrics["proj_norm"] = torch.norm(update).item()
+            return update, metrics
         return grad, metrics
 
     def forward(self, grad: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:  # type: ignore[override]

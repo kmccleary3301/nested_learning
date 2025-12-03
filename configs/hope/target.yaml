@@ -14,6 +14,7 @@ model:
   num_layers: 32
   heads: 24
   surprise_threshold: null
+  freeze_backbone: false
   titan_level:
     name: titan
     update_period: 32
