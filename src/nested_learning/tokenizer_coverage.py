@@ -25,7 +25,7 @@ def compute_tokenizer_coverage_stats(
     total_chars = 0
     processed_lines = 0
     word_token_lengths: list[int] = []
-    piece_lengths = Counter()
+    piece_lengths: Counter[int] = Counter()
 
     with sample_file.open("r", encoding="utf-8") as handle:
         for idx, line in enumerate(handle):
@@ -56,8 +56,12 @@ def compute_tokenizer_coverage_stats(
         raise ValueError("Sample produced no words; double-check the sample_file path.")
 
     avg_tokens_per_word = total_tokens / total_words if total_words else 0.0
-    pct_single_token = sum(1 for length in word_token_lengths if length == 1) / len(word_token_lengths)
-    pct_two_or_less = sum(1 for length in word_token_lengths if length <= 2) / len(word_token_lengths)
+    pct_single_token = sum(1 for length in word_token_lengths if length == 1) / len(
+        word_token_lengths
+    )
+    pct_two_or_less = sum(1 for length in word_token_lengths if length <= 2) / len(
+        word_token_lengths
+    )
 
     return {
         "tokenizer": str(tokenizer_path),

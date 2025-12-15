@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Optional, Sequence, cast
 
 import torch
 import torch.nn as nn
@@ -34,7 +34,7 @@ class CMSBlock(nn.Module):
         self.grad_clip = grad_clip
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
-        delta = self.net(x)
+        delta = cast(torch.Tensor, self.net(x))
         if self.training and self.grad_clip > 0:
             with torch.no_grad():
                 norm = delta.norm(dim=-1, keepdim=True)
@@ -150,7 +150,11 @@ class CMS(nn.Module):
         seq_lens = {tensor.shape[1] for tensor in tensors}
         if len(seq_lens) == 1:
             stacked = torch.cat(tensors, dim=0)
-            mask = torch.ones((stacked.shape[0], stacked.shape[1]), device=stacked.device, dtype=torch.bool)
+            mask = torch.ones(
+                (stacked.shape[0], stacked.shape[1]),
+                device=stacked.device,
+                dtype=torch.bool,
+            )
             return stacked, mask
         max_len = max(seq_lens)
         padded = []
@@ -159,7 +163,13 @@ class CMS(nn.Module):
             curr_len = tensor.shape[1]
             if curr_len == max_len:
                 padded.append(tensor)
-                masks.append(torch.ones((tensor.shape[0], curr_len), device=tensor.device, dtype=torch.bool))
+                masks.append(
+                    torch.ones(
+                        (tensor.shape[0], curr_len),
+                        device=tensor.device,
+                        dtype=torch.bool,
+                    )
+                )
                 continue
             pad_len = max_len - curr_len
             pad_shape = (tensor.shape[0], pad_len, tensor.shape[2])

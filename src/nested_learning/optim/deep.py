@@ -58,6 +58,9 @@ class DeepMomentum(nn.Module):
         metrics["ctx_norm"] = ctx_norm.item()
 
         if ctx_norm > 0:
+            if grad.ndim < 2:
+                metrics["proj_norm"] = torch.norm(grad).item()
+                return grad, metrics
             unit = ctx / (ctx_norm + self.eps)
             # Project grad orthogonal to context (rank-1 projector).
             projection = (grad * unit).sum(dim=-1, keepdim=True) * unit
@@ -66,7 +69,12 @@ class DeepMomentum(nn.Module):
             return update, metrics
         return grad, metrics
 
-    def forward(self, grad: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:  # type: ignore[override]
+    def forward(
+        self,
+        grad: torch.Tensor,
+        *,
+        context: torch.Tensor | None = None,
+    ) -> torch.Tensor:  # type: ignore[override]
         if self.state.grad_avg is None or self.state.grad_avg.shape != grad.shape:
             self.state.grad_avg = torch.zeros_like(grad)
         self.last_metrics = {}

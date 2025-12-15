@@ -8,7 +8,6 @@ import typer
 
 from nested_learning.training import verify_checkpoint_integrity
 
-
 app = typer.Typer(help="Verify checkpoint metadata hashes, config, and RNG sidecars.")
 
 

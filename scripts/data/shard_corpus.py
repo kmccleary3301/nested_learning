@@ -38,7 +38,13 @@ def shard_dataset(config: ShardConfig) -> dict:
     load_kwargs = {}
     if config.data_files is not None:
         load_kwargs["data_files"] = config.data_files
-    ds = load_dataset(config.dataset, config.subset, split=config.split, streaming=True, **load_kwargs)
+    ds = load_dataset(
+        config.dataset,
+        config.subset,
+        split=config.split,
+        streaming=True,
+        **load_kwargs,
+    )
 
     buffer: List[int] = []
     sequences: List[List[int]] = []
@@ -82,7 +88,8 @@ def shard_dataset(config: ShardConfig) -> dict:
         "output_dir": str(config.output_dir),
     }
     typer.echo(
-        f"[Shard] {config.name}: records={records} sequences={sequences_total} shards={shard_idx} -> {config.output_dir}"
+        f"[Shard] {config.name}: records={records} sequences={sequences_total} "
+        f"shards={shard_idx} -> {config.output_dir}"
     )
     return stats
 

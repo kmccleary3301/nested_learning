@@ -10,8 +10,12 @@ import typer
 from datasets import load_dataset
 from omegaconf import OmegaConf
 
-from nested_learning.memorize import MemorizeConfig
-from nested_learning.memorize import memorize_sequence, restore_state_dict, snapshot_state_dict
+from nested_learning.memorize import (
+    MemorizeConfig,
+    memorize_sequence,
+    restore_state_dict,
+    snapshot_state_dict,
+)
 from nested_learning.tokenizer import SentencePieceTokenizer
 from nested_learning.training import build_model_from_cfg, unwrap_config
 
@@ -30,7 +34,13 @@ def load_model(config: Path, checkpoint: Path, device: torch.device):
     return model.to(device).eval()
 
 
-def _nll_for_text(model, tokenizer, text: str, device: torch.device, max_seq: int) -> tuple[float, int] | None:
+def _nll_for_text(
+    model,
+    tokenizer,
+    text: str,
+    device: torch.device,
+    max_seq: int,
+) -> tuple[float, int] | None:
     tokens = tokenizer.encode(text, add_bos=True, add_eos=True)
     if tokens.size(0) < 2:
         return None
@@ -53,7 +63,10 @@ def main(
     max_samples: int = typer.Option(64, help="Number of PG-19 samples."),
     device: str = typer.Option("cuda:0" if torch.cuda.is_available() else "cpu"),
     output: Path = typer.Option(Path("eval/pg19_perplexity.json")),
-    context_tokens: int = typer.Option(2048, help="Truncate text to this many tokens before scoring."),
+    context_tokens: int = typer.Option(
+        2048,
+        help="Truncate text to this many tokens before scoring.",
+    ),
     memorize: bool = typer.Option(False, help="Apply test-time memorization to each excerpt."),
     memorize_steps: int = typer.Option(1, help="Memorization passes per excerpt."),
     memorize_no_reset: bool = typer.Option(False, help="Retain memory between excerpts."),
@@ -68,7 +81,12 @@ def main(
     torch_device = torch.device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)
-    dataset = load_dataset("pg19", split="test", streaming=True, trust_remote_code=True).shuffle(seed=42)
+    dataset = load_dataset(
+        "pg19",
+        split="test",
+        streaming=True,
+        trust_remote_code=True,
+    ).shuffle(seed=42)
     total_tokens = 0
     total_nll_base = 0.0
     total_nll_mem = 0.0
@@ -118,7 +136,9 @@ def main(
         "ppl_delta": ppl_base - ppl_mem,
     }
     if memorize_cfg.enabled:
-        payload["memorize_paths"] = "all" if memorize_cfg.paths is None else ",".join(memorize_cfg.paths)
+        payload["memorize_paths"] = (
+            "all" if memorize_cfg.paths is None else ",".join(memorize_cfg.paths)
+        )
         payload["memorize_surprise_threshold"] = memorize_cfg.surprise_threshold
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2))

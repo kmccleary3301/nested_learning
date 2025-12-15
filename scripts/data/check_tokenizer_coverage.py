@@ -9,7 +9,6 @@ import typer
 
 from nested_learning.tokenizer_coverage import compute_tokenizer_coverage_stats
 
-
 app = typer.Typer(add_completion=False, help="Compute tokenizer coverage stats on a text sample.")
 
 

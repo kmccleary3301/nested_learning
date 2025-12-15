@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Sequence
+from typing import Dict, Sequence, cast
 
 import torch
 import torch.nn as nn
@@ -66,7 +66,7 @@ class HOPEModel(nn.Module):
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self._surprise_threshold = threshold
         for block in self.blocks:
-            block.set_surprise_threshold(threshold)
+            cast(HOPEBlock, block).set_surprise_threshold(threshold)
 
     def get_surprise_threshold(self) -> float | None:
         return self._surprise_threshold
@@ -74,7 +74,7 @@ class HOPEModel(nn.Module):
     def set_allowed_update_levels(self, levels: set[str] | None) -> None:
         self._allowed_update_levels = levels.copy() if levels is not None else None
         for block in self.blocks:
-            block.set_allowed_levels(self._allowed_update_levels)
+            cast(HOPEBlock, block).set_allowed_levels(self._allowed_update_levels)
 
     def get_allowed_update_levels(self) -> set[str] | None:
         return None if self._allowed_update_levels is None else self._allowed_update_levels.copy()
@@ -89,7 +89,8 @@ class HOPEModel(nn.Module):
         surprise_value: float | None = None
         if teach_signal is not None:
             surprise_value = float(teach_signal.norm(dim=-1).mean().item())
-        for block in self.blocks:
+        for module in self.blocks:
+            block: HOPEBlock = cast(HOPEBlock, module)
             scaled_signal = None
             if teach_signal is not None:
                 scaled_signal = teach_signal * self._runtime_teach_scale
@@ -97,17 +98,21 @@ class HOPEModel(nn.Module):
                     norm = scaled_signal.norm(dim=-1, keepdim=True)
                     scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
                     scaled_signal = scaled_signal / scale
-            block_call = lambda hidden, blk=block, sig=scaled_signal: blk(
-                hidden,
-                teach_signal=sig,
-                surprise_value=surprise_value,
-            )
+
+            def block_call(
+                hidden: torch.Tensor,
+                blk: HOPEBlock = block,
+                sig: torch.Tensor | None = scaled_signal,
+                sv: float | None = surprise_value,
+            ) -> torch.Tensor:
+                return cast(torch.Tensor, blk(hidden, teach_signal=sig, surprise_value=sv))
+
             if self.training and self.gradient_checkpointing:
                 x = checkpoint(block_call, x, use_reentrant=False)
             else:
                 x = block_call(x)
-        x = self.norm(x)
-        logits = self.lm_head(x)
+        x = cast(torch.Tensor, self.norm(x))
+        logits = cast(torch.Tensor, self.lm_head(x))
         if teach_signal is not None:
             self._latest_update_metrics = self._gather_block_stats()
         return logits
@@ -115,12 +120,11 @@ class HOPEModel(nn.Module):
     def _gather_block_stats(self) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
         for idx, block in enumerate(self.blocks):
-            if hasattr(block, "pop_update_stats"):
-                stats = block.pop_update_stats()
-                for level_name, payload in stats.items():
-                    prefix = f"layer{idx}.{level_name}"
-                    for key, value in payload.items():
-                        metrics[f"{prefix}.{key}"] = value
+            stats = cast(HOPEBlock, block).pop_update_stats()
+            for level_name, payload in stats.items():
+                prefix = f"layer{idx}.{level_name}"
+                for key, value in payload.items():
+                    metrics[f"{prefix}.{key}"] = value
         return metrics
 
     def pop_update_metrics(self) -> Dict[str, float]:
@@ -140,6 +144,5 @@ class HOPEModel(nn.Module):
         for p in self.lm_head.parameters():
             p.requires_grad = False
         for block in self.blocks:
-            if hasattr(block, "attn"):
-                for p in block.attn.parameters():
-                    p.requires_grad = False
+            for p in cast(HOPEBlock, block).attn.parameters():
+                p.requires_grad = False

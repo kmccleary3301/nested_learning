@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
-import sentencepiece as spm
+import sentencepiece as spm  # type: ignore[import-untyped]
 import torch
 
 
 class SentencePieceTokenizer:
     def __init__(self, model_path: str | Path):
-        self.processor = spm.SentencePieceProcessor(model_file=str(model_path))
+        self.processor: Any = spm.SentencePieceProcessor(model_file=str(model_path))
 
     @property
     def vocab_size(self) -> int:
-        return self.processor.vocab_size()
+        return int(self.processor.vocab_size())
 
     def encode(self, text: str, add_bos: bool = False, add_eos: bool = True) -> torch.Tensor:
         tokens: list[int] = []

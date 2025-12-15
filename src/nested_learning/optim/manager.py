@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -12,7 +12,7 @@ from .factory import build_optimizer
 
 @dataclass
 class LevelConfig:
-    specs: Iterable[LevelSpec]
+    specs: Sequence[LevelSpec]
     optimizer_configs: Dict[str, dict]
     default_lr: float
 
@@ -28,7 +28,12 @@ class LevelOptimizerManager:
             optim_cfg = config.optimizer_configs.get(key, {"type": "deep_momentum", "params": {}})
             lr = optim_cfg.get("lr", config.default_lr)
             params_cfg = optim_cfg.get("params", {})
-            optimizer = build_optimizer({"type": optim_cfg.get("type", "deep_momentum"), "params": params_cfg})
+            optimizer = build_optimizer(
+                {
+                    "type": optim_cfg.get("type", "deep_momentum"),
+                    "params": params_cfg,
+                }
+            )
             self.optimizers[spec.name] = optimizer
             self.learning_rates[spec.name] = lr
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, List, Sequence
+from typing import Iterator, List, Sequence, cast
 
 import numpy as np
 import torch
@@ -103,12 +103,13 @@ class ShardSource:
         self._cache: dict[Path, np.memmap] = {}
 
     def sample(self, rng: np.random.Generator) -> np.ndarray:
-        shard_path = self.paths[rng.integers(0, len(self.paths))]
+        shard_idx = int(rng.integers(0, len(self.paths)))
+        shard_path = self.paths[shard_idx]
         if shard_path not in self._cache:
-            self._cache[shard_path] = np.load(shard_path, mmap_mode="r")
+            self._cache[shard_path] = cast(np.memmap, np.load(shard_path, mmap_mode="r"))
         shard = self._cache[shard_path]
-        idx = rng.integers(0, shard.shape[0])
-        return shard[idx]
+        idx = int(rng.integers(0, shard.shape[0]))
+        return np.asarray(shard[idx])
 
 
 class MixtureShardDataset(IterableDataset[torch.Tensor]):

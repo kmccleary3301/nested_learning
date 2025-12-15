@@ -12,15 +12,15 @@ import typer
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from nested_learning.model import HOPEModel
 from nested_learning.memorize import (
     MemorizeConfig,
     memorize_sequence,
     restore_state_dict,
     snapshot_state_dict,
 )
-from nested_learning.training import build_model_from_cfg, unwrap_config
+from nested_learning.model import HOPEModel
 from nested_learning.tokenizer import SentencePieceTokenizer
+from nested_learning.training import build_model_from_cfg, unwrap_config
 
 app = typer.Typer(add_completion=False, help="Needle-in-a-haystack evaluation scaffolding.")
 
@@ -44,12 +44,20 @@ def make_prompt(needle: str, filler_tokens: int) -> str:
     filler_chunks = ["This is filler sentence number {}.".format(i) for i in range(filler_tokens)]
     random.shuffle(filler_chunks)
     haystack = " ".join(filler_chunks)
-    prompt = f"{haystack} Remember that the secret key is {needle}. Later you might be asked about it. "
-    prompt += "Now answer the question truthfully. What is the secret key? Answer:"
-    return prompt
+    return (
+        f"{haystack} Remember that the secret key is {needle}. "
+        "Later you might be asked about it. "
+        "Now answer the question truthfully. What is the secret key? Answer:"
+    )
 
 
-def logprob_answer(model: HOPEModel, tokenizer: SentencePieceTokenizer, prompt: str, answer: str, device: torch.device) -> float:
+def logprob_answer(
+    model: HOPEModel,
+    tokenizer: SentencePieceTokenizer,
+    prompt: str,
+    answer: str,
+    device: torch.device,
+) -> float:
     prompt_ids = tokenizer.encode(prompt, add_bos=True)
     answer_ids = tokenizer.encode(" " + answer, add_bos=False)
     inputs = torch.cat([prompt_ids, answer_ids], dim=0).to(device)
@@ -74,14 +82,20 @@ def main(
     output: Path = typer.Option(Path("eval/niah_results.json")),
     memorize: bool = typer.Option(False, help="Enable test-time memorization for each prompt."),
     memorize_steps: int = typer.Option(1, help="Memorization passes per prompt."),
-    memorize_use_correct_answer: bool = typer.Option(False, help="Include correct key when memorizing."),
+    memorize_use_correct_answer: bool = typer.Option(
+        False,
+        help="Include correct key when memorizing.",
+    ),
     memorize_no_reset: bool = typer.Option(False, help="Retain memory between samples."),
     memorize_surprise_threshold: float = typer.Option(
         None, help="Minimum teach-signal norm required to trigger memorization."
     ),
     memorize_paths: str = typer.Option(
         "all",
-        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' for no restriction.",
+        help=(
+            "Comma-separated memory paths to update (e.g., 'titan,cms_fast'); "
+            "use 'all' for no restriction."
+        ),
     ),
 ) -> None:
     torch_device = torch.device(device)
@@ -118,11 +132,23 @@ def main(
                 memorize_text = prompt
                 if memorize_cfg.use_correct_answer:
                     memorize_text = f"{prompt} {needle}"
-                stats = memorize_sequence(model, tokenizer, memorize_text, torch_device, memorize_cfg)
+                stats = memorize_sequence(
+                    model,
+                    tokenizer,
+                    memorize_text,
+                    torch_device,
+                    memorize_cfg,
+                )
                 for key, value in stats.items():
                     path_stats[key] += value
                 logprob_true_mem = logprob_answer(model, tokenizer, prompt, needle, torch_device)
-                logprob_false_mem = logprob_answer(model, tokenizer, prompt, distractor, torch_device)
+                logprob_false_mem = logprob_answer(
+                    model,
+                    tokenizer,
+                    prompt,
+                    distractor,
+                    torch_device,
+                )
                 correct_mem += int(logprob_true_mem > logprob_false_mem)
                 if memorize_cfg.enabled and memorize_cfg.reset and base_state is not None:
                     restore_state_dict(model, base_state)

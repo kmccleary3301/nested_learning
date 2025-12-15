@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Tuple
 
 import torch
 import typer
@@ -18,8 +18,8 @@ from nested_learning.memorize import (
     restore_state_dict,
     snapshot_state_dict,
 )
-from nested_learning.training import build_model_from_cfg, unwrap_config
 from nested_learning.tokenizer import SentencePieceTokenizer
+from nested_learning.training import build_model_from_cfg, unwrap_config
 
 app = typer.Typer(add_completion=False, help="Zero-shot evaluation harness for HOPE.")
 HF_DATASET_KWARGS = {"trust_remote_code": True}
@@ -177,7 +177,14 @@ def build_arc_texts(sample: dict) -> Tuple[str, List[str], int]:
     return prompt, texts, target
 
 
-def eval_arc(model, tokenizer, device, max_samples, difficulty: str, memorize_cfg: MemorizeConfig) -> Dict[str, float]:
+def eval_arc(
+    model,
+    tokenizer,
+    device,
+    max_samples,
+    difficulty: str,
+    memorize_cfg: MemorizeConfig,
+) -> Dict[str, float]:
     dataset = load_dataset("ai2_arc", difficulty, split="validation", **HF_DATASET_KWARGS)
     return evaluate_multiple_choice(
         f"arc_{difficulty.lower()}",
@@ -270,8 +277,22 @@ TASK_EVALUATORS = {
     "piqa": eval_piqa,
     "hellaswag": eval_hellaswag,
     "winogrande": eval_winogrande,
-    "arc_easy": lambda model, tok, dev, n, mem: eval_arc(model, tok, dev, n, "ARC-Easy", mem),
-    "arc_challenge": lambda model, tok, dev, n, mem: eval_arc(model, tok, dev, n, "ARC-Challenge", mem),
+    "arc_easy": lambda model, tok, dev, n, mem: eval_arc(
+        model,
+        tok,
+        dev,
+        n,
+        "ARC-Easy",
+        mem,
+    ),
+    "arc_challenge": lambda model, tok, dev, n, mem: eval_arc(
+        model,
+        tok,
+        dev,
+        n,
+        "ARC-Challenge",
+        mem,
+    ),
     "boolq": eval_boolq,
     "siqa": eval_siqa,
     "commonsenseqa": eval_commonsenseqa,
@@ -287,20 +308,30 @@ def main(
     tasks: str = typer.Option("piqa", help="Comma-separated list of tasks or 'all'."),
     max_samples: int = typer.Option(500, help="Max samples per task (0 = entire split)."),
     output: Path = typer.Option(Path("eval/zeroshot_results.json"), help="Output JSON file."),
-    device: str = typer.Option("cuda:0" if torch.cuda.is_available() else "cpu", help="Device to run eval on."),
+    device: str = typer.Option(
+        "cuda:0" if torch.cuda.is_available() else "cpu",
+        help="Device to run eval on.",
+    ),
     list_tasks: bool = typer.Option(False, "--list-tasks", help="List available tasks and exit."),
     memorize: bool = typer.Option(False, help="Enable test-time memorization updates."),
     memorize_steps: int = typer.Option(1, help="Number of memorize passes per sample."),
     memorize_use_correct_answer: bool = typer.Option(
-        False, help="When memorizing, include the correct answer text (for ablations)."
+        False,
+        help="When memorizing, include the correct answer text (for ablations).",
     ),
-    memorize_no_reset: bool = typer.Option(False, help="If set, retain memorization across samples."),
+    memorize_no_reset: bool = typer.Option(
+        False,
+        help="If set, retain memorization across samples.",
+    ),
     memorize_surprise_threshold: float = typer.Option(
         None, help="Minimum teach-signal norm required before applying memorization."
     ),
     memorize_paths: str = typer.Option(
         "all",
-        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' to allow every path.",
+        help=(
+            "Comma-separated memory paths to update (e.g., 'titan,cms_fast'); "
+            "use 'all' to allow every path."
+        ),
     ),
 ) -> None:
     available = list(TASK_EVALUATORS.keys())
@@ -308,7 +339,10 @@ def main(
         typer.echo("Available tasks: " + ", ".join(available))
         raise typer.Exit(0)
 
-    selected_tasks = available if tasks.lower() == "all" else [t.strip().lower() for t in tasks.split(",")]
+    if tasks.lower() == "all":
+        selected_tasks = available
+    else:
+        selected_tasks = [t.strip().lower() for t in tasks.split(",") if t.strip()]
     torch_device = torch.device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)

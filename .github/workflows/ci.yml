@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
 
       - name: Sync dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --all-extras
 
       - name: Ruff
         run: uv run ruff check .
@@ -42,7 +42,7 @@ jobs:
           python-version: "3.12"
 
       - name: Sync dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --all-extras
 
       - name: CPU DDP smoke (gloo backend)
         run: bash scripts/run_cpu_ddp_smoke.sh
@@ -59,7 +59,7 @@ jobs:
           python-version: "3.12"
 
       - name: Sync dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --all-extras
 
       - name: Run synthetic passkey memorization test
         run: bash scripts/tests/run_passkey_smoke.sh
