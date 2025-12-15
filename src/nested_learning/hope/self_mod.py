@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.nn as nn
 
@@ -37,4 +39,4 @@ class SelfModifier(nn.Module):
         error_signal: torch.Tensor,
     ) -> torch.Tensor:
         concat = torch.cat([key, value, error_signal], dim=-1)
-        return self.net(concat)
+        return cast(torch.Tensor, self.net(concat))

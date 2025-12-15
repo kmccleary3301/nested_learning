@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, cast
 
 import torch
 import torch.nn as nn
 
 from ..backbones import AttentionConfig, SelfAttention
+from ..hope.self_mod import SelfModifier
 from ..levels import LevelSpec
 from ..optim.manager import LevelConfig, LevelOptimizerManager
 from ..titan.memory import TitanMemory, TitanMemoryConfig
-from ..hope.self_mod import SelfModifier
 
 
 @dataclass
@@ -67,7 +67,7 @@ class TitanOnlyBlock(nn.Module):
         if teach_signal is not None:
             self._update_titan(attn_out, mem_out, teach_signal)
         self.level_manager.tick()
-        return self.norm(combined)
+        return cast(torch.Tensor, self.norm(combined))
 
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self.surprise_threshold = threshold
@@ -102,17 +102,16 @@ class TitanOnlyBlock(nn.Module):
             query = attn_out.detach().requires_grad_(True)
             target = (teach_signal.detach() + modifier).detach()
             prediction = self.titan_memory(query)
-            
-            # Granular Masking (Critique P1)
-            loss = nn.functional.mse_loss(prediction, target, reduction='none')
+
+            loss = nn.functional.mse_loss(prediction, target, reduction="none")
             if self.surprise_threshold is not None:
                 with torch.no_grad():
-                     norms = teach_signal.norm(dim=-1, keepdim=True)
-                     mask = (norms >= self.surprise_threshold).float()
+                    norms = teach_signal.norm(dim=-1, keepdim=True)
+                    mask = (norms >= self.surprise_threshold).float()
                 loss = (loss * mask).sum() / mask.sum().clamp(min=1.0)
             else:
                 loss = loss.mean()
-            
+
         self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
         # Pop metrics to avoid stale entries even if we do not log them yet.
         self.level_manager.pop_last_metrics(level_name)
@@ -144,7 +143,7 @@ class TitanOnlyModel(nn.Module):
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self._surprise_threshold = threshold
         for block in self.blocks:
-            block.set_surprise_threshold(threshold)
+            cast(TitanOnlyBlock, block).set_surprise_threshold(threshold)
 
     def get_surprise_threshold(self) -> float | None:
         return self._surprise_threshold
@@ -155,7 +154,7 @@ class TitanOnlyModel(nn.Module):
             enabled = False
         self._updates_enabled = enabled
         for block in self.blocks:
-            block.set_enabled(enabled)
+            cast(TitanOnlyBlock, block).set_enabled(enabled)
 
     def get_allowed_update_levels(self) -> set[str] | None:
         if self._updates_enabled:
@@ -170,6 +169,7 @@ class TitanOnlyModel(nn.Module):
     ) -> torch.Tensor:
         x = self.embed(tokens)
         for block in self.blocks:
+            block = cast(TitanOnlyBlock, block)
             scaled_signal = None
             if teach_signal is not None:
                 scaled_signal = teach_signal * self._runtime_teach_scale
@@ -179,8 +179,8 @@ class TitanOnlyModel(nn.Module):
                         scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
                     scaled_signal = scaled_signal / scale
             x = block(x, teach_signal=scaled_signal)  # type: ignore[arg-type]
-        x = self.norm(x)
-        return self.lm_head(x)
+        x = cast(torch.Tensor, self.norm(x))
+        return cast(torch.Tensor, self.lm_head(x))
 
     def freeze_backbone(self) -> None:
         """
@@ -193,6 +193,5 @@ class TitanOnlyModel(nn.Module):
         for p in self.lm_head.parameters():
             p.requires_grad = False
         for block in self.blocks:
-            if hasattr(block, "attn"):
-                for p in block.attn.parameters():
-                    p.requires_grad = False
+            for p in cast(TitanOnlyBlock, block).attn.parameters():
+                p.requires_grad = False

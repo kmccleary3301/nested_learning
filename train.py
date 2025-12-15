@@ -23,6 +23,11 @@ def _resolve_device(device_str: str) -> torch.device:
         if idx >= torch.cuda.device_count():
             idx = torch.cuda.device_count() - 1
         return torch.device(f"cuda:{idx}")
+    if device_str.startswith("mps"):
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is None or not mps_backend.is_available():
+            return torch.device("cpu")
+        return torch.device("mps")
     return torch.device(device_str)
 
 

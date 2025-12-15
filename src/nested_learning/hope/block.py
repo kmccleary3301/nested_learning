@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Sequence, Set
+from typing import Dict, Sequence, Set, cast
 
 import torch
 import torch.nn as nn
@@ -75,7 +75,7 @@ class HOPEBlock(nn.Module):
             self._update_titan(attn_out, mem_out, teach_signal, surprise_value)
             self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
         self.level_manager.tick()
-        return cms_out
+        return cast(torch.Tensor, cms_out)
 
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self.surprise_threshold = threshold
@@ -106,26 +106,31 @@ class HOPEBlock(nn.Module):
             value=mem_out.detach(),
             error_signal=teach_signal.detach(),
         )
-        # context_vec is still pooled for the optimizer interface which expects a vector/low-rank hint
+        # context_vec is still pooled for the optimizer interface which expects a
+        # vector/low-rank hint.
         context_vec = attn_out.detach().mean(dim=(0, 1))
-        
+
         with torch.enable_grad():
             query = attn_out.detach().requires_grad_(True)
-            target = (teach_signal.detach() + modifier).detach() # modifier is now (B, T, D)
+            # modifier: (B, T, D)
+            target = (teach_signal.detach() + modifier).detach()
             prediction = self.titan_memory(query)
-            
-            # Granular Masking (Critique P1)
-            loss = F.mse_loss(prediction, target, reduction='none')
+
+            loss = F.mse_loss(prediction, target, reduction="none")
             if self.surprise_threshold is not None:
-                # Mask out tokens where surprise < threshold
                 with torch.no_grad():
-                     norms = teach_signal.norm(dim=-1, keepdim=True)
-                     mask = (norms >= self.surprise_threshold).float()
+                    norms = teach_signal.norm(dim=-1, keepdim=True)
+                    mask = (norms >= self.surprise_threshold).float()
                 loss = (loss * mask).sum() / mask.sum().clamp(min=1.0)
             else:
                 loss = loss.mean()
-        
-        magnitude = self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
+
+        magnitude = self.level_manager.optimize(
+            level_name,
+            self.titan_memory,
+            loss,
+            context=context_vec,
+        )
         extra_metrics = self.level_manager.pop_last_metrics(level_name)
         stats = {"grad_norm": magnitude, "gate_hit": 1.0}
         if surprise_value is not None:

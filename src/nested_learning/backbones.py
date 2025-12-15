@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from contextlib import nullcontext
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -36,9 +36,9 @@ class SelfAttention(nn.Module):
         q, k, v = self._compute_qkv(x)
         attn_output = self._scaled_dot_product_attn(q, k, v)
         attn_output = attn_output.transpose(1, 2).contiguous().view(x.size(0), x.size(1), -1)
-        attn_output = self.out_proj(attn_output)
+        attn_output = cast(torch.Tensor, self.out_proj(attn_output))
         attn_output = self.resid_dropout(attn_output)
-        return self.norm(residual + attn_output)
+        return cast(torch.Tensor, self.norm(residual + attn_output))
 
     def _compute_qkv(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         qkv = self.qkv(x)
@@ -56,10 +56,8 @@ class SelfAttention(nn.Module):
         v: torch.Tensor,
     ) -> torch.Tensor:
         dropout_p = self.config.dropout if self.training else 0.0
-        device_type = q.device.type
-        ctx = nullcontext()
         if (
-            device_type == "cuda"
+            q.device.type == "cuda"
             and torch.cuda.is_available()
             and hasattr(torch.backends, "cuda")
             and hasattr(torch.backends.cuda, "sdp_kernel")
@@ -69,7 +67,16 @@ class SelfAttention(nn.Module):
                 enable_mem_efficient=True,
                 enable_math=not self.config.use_flash,
             )
-        with ctx:
+            with ctx:
+                attn = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=dropout_p,
+                    is_causal=self.config.causal,
+                )
+        else:
             attn = F.scaled_dot_product_attention(
                 q,
                 k,
@@ -78,4 +85,4 @@ class SelfAttention(nn.Module):
                 dropout_p=dropout_p,
                 is_causal=self.config.causal,
             )
-        return attn
+        return cast(torch.Tensor, attn)

@@ -9,11 +9,14 @@ All notable changes to this project will be documented here. The format loosely 
 - Muon + AdamW hybrid optimizer option exposed via `optim.type=muon`, routing ≥2D matrices through `torch.optim.Muon`.
 - Test-time memorization flags (`--memorize*`) documented in README + `docs/guide.md`, matching TITAN eval behavior.
 - Automation helpers: `scripts/run_e2e_smoke.sh` documented in Quickstart, plus new `scripts/run_cpu_ddp_smoke.sh` for CPU-only DDP/gloo smoke coverage.
+- New/updated scripts for tokenizer checks, sharding, and evaluation (see docs/guide.md for details).
+- Added GitHub Actions CI workflow for linting, type checking, and tests on PRs and main branch, now running on both Ubuntu and macOS runners for cross-platform compatibility.
 
 ### Changed
 - Repository license metadata now matches the shipped Apache-2.0 text; badges updated accordingly.
 - README and guide refreshed with performance knobs, optimizer guidance, and memorization instructions so release consumers have a single source of truth.
 - Release checklist tracks the new CPU DDP smoke script to keep packaging instructions aligned with available tooling.
+- Minor bugfixes, typing, and formatting improvements across the codebase for maintainability and CI compatibility.
 
 ### Upcoming
 - GitHub Actions workflow covering `ruff`, `mypy`, and `pytest`.

@@ -7,17 +7,22 @@ from typing import Any, Dict, List
 
 import typer
 import yaml
-
 from shard_corpus import ShardConfig, shard_dataset
 
-app = typer.Typer(add_completion=False, help="Process a dataset manifest to shard multiple corpora.")
+app = typer.Typer(
+    add_completion=False,
+    help="Process a dataset manifest to shard multiple corpora.",
+)
 
 
 @app.command()
 def main(
     manifest: Path = typer.Argument(..., help="YAML manifest describing datasets."),
     tokenizer_path: Path = typer.Option(..., help="SentencePiece model to tokenize with."),
-    log_file: Path = typer.Option(Path("data/mixtures/mixture_stats.json"), help="Output stats JSON."),
+    log_file: Path = typer.Option(
+        Path("data/mixtures/mixture_stats.json"),
+        help="Output stats JSON.",
+    ),
 ) -> None:
     data = yaml.safe_load(manifest.read_text())
     datasets = data.get("datasets", data)

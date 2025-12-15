@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Iterable, List, MutableMapping, Sequence
 
 
@@ -75,7 +75,10 @@ class LevelClock:
         return sorted(self._specs.values(), key=lambda spec: spec.update_period)
 
     def stats(self) -> Dict[str, LevelState]:
-        return {name: LevelState(state.last_step, state.updates) for name, state in self._state.items()}
+        return {
+            name: LevelState(state.last_step, state.updates)
+            for name, state in self._state.items()
+        }
 
     def timeline(self) -> List[dict]:
         return list(self._timeline)

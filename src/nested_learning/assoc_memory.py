@@ -13,7 +13,13 @@ class AssocMemory(nn.Module):
         raise NotImplementedError
 
     @torch.no_grad()
-    def update(self, *, key: torch.Tensor, value: torch.Tensor, error_signal: torch.Tensor | None = None) -> None:
+    def update(
+        self,
+        *,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        error_signal: torch.Tensor | None = None,
+    ) -> None:
         raise NotImplementedError
 
 

@@ -150,7 +150,15 @@ Use paired runs (with/without `--memorize`) to log adaptation gains; both JSON o
 
 ---
 
-## 10. References
+## 10. Recent changes in this branch (for PR)
+
+- Added/updated scripts in `scripts/data/`, `scripts/checks/`, and `scripts/eval/` for improved tokenizer, sharding, and evaluation workflows. See script docstrings for usage.
+- Added `.github/workflows/ci.yml` for automated lint, type, and test checks (Ruff, mypy, pytest, smoke tests) on PRs and pushes to main, now running on both Ubuntu and macOS runners for cross-platform compatibility.
+- Minor bugfixes and typing improvements across the codebase for compatibility and maintainability.
+
+---
+
+## 11. References
 - **Nested Learning paper + transcript:** `google_papers/Nested_Learning/`
 - **TITANs paper + lucidrains repo:** `google_papers/TITANs/`, `ref_repos/titans-pytorch`
 - **Planning transcript:** `docs/planner_convo_01.md`

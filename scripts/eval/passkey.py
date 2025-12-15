@@ -9,7 +9,12 @@ import torch
 import typer
 from omegaconf import OmegaConf
 
-from nested_learning.memorize import MemorizeConfig, memorize_sequence, restore_state_dict, snapshot_state_dict
+from nested_learning.memorize import (
+    MemorizeConfig,
+    memorize_sequence,
+    restore_state_dict,
+    snapshot_state_dict,
+)
 from nested_learning.tokenizer import SentencePieceTokenizer
 from nested_learning.training import build_model_from_cfg, unwrap_config
 
@@ -70,7 +75,10 @@ def main(
     ),
     memorize_paths: str = typer.Option(
         "all",
-        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' for unrestricted paths.",
+        help=(
+            "Comma-separated memory paths to update (e.g., 'titan,cms_fast'); "
+            "use 'all' for unrestricted paths."
+        ),
     ),
 ) -> None:
     torch_device = torch.device(device)

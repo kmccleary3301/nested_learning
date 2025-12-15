@@ -1,9 +1,8 @@
 import torch
 
-from nested_learning.hope.block import HOPEBlockConfig
 from nested_learning.levels import LevelSpec
-from nested_learning.model import HOPEModel, ModelConfig
 from nested_learning.memorize import MemorizeConfig, memorize_tokens, snapshot_state_dict
+from nested_learning.model import HOPEModel, ModelConfig
 
 
 def _tiny_model() -> HOPEModel:

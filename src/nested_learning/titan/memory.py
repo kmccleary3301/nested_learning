@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, cast
 
 import torch
 import torch.nn as nn
@@ -47,16 +47,16 @@ class TitanMemory(AssocMemory):
         self.grad_clip = 1.0
 
     def forward(self, query: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
-        attn = self.net(query)
+        attn = cast(torch.Tensor, self.net(query))
         if self.training and self.grad_clip > 0:
             with torch.no_grad():
                 norm = attn.norm(dim=-1, keepdim=True)
                 scale = torch.clamp(norm / self.grad_clip, min=1.0)
             attn = attn / scale
-        return self.norm(attn)
+        return cast(torch.Tensor, self.norm(attn))
 
     def surprise(self, residual: torch.Tensor) -> torch.Tensor:
-        return residual.norm(dim=-1, keepdim=True)
+        return cast(torch.Tensor, residual.norm(dim=-1, keepdim=True))
 
     @torch.no_grad()
     def update(

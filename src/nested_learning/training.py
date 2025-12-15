@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Protocol, Tuple, cast
 
 import numpy as np
 import torch
@@ -38,27 +38,59 @@ class DistributedContext:
     device: torch.device
 
 
+class SupportsTeachRuntime(Protocol):
+    def set_teach_runtime(
+        self,
+        *,
+        scale: float | None = None,
+        clip: float | None = None,
+    ) -> None: ...
+
+
+class SupportsLMHead(Protocol):
+    lm_head: torch.nn.Linear
+
+
+class OptimizerLike(Protocol):
+    def zero_grad(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def step(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def state_dict(self) -> dict[str, Any]: ...
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None: ...
+
+    @property
+    def param_groups(self) -> list[dict[str, Any]]: ...
+
+
 def unwrap_config(cfg: DictConfig) -> DictConfig:
     """Hydra can wrap grouped configs (e.g., hope/pilot) under the group name."""
     if "model" in cfg:
         return cfg
     if "hope" in cfg:
-        return cfg.hope
+        return cast(DictConfig, cfg.hope)
     if "ablations" in cfg:
-        return cfg.ablations
+        return cast(DictConfig, cfg.ablations)
     return cfg
 
 
 def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
     model_type = model_cfg.get("type", "hope")
-    optimizer_cfg = {}
+    optimizer_cfg: Dict[str, dict] = {}
     if "optimizers" in model_cfg:
-        optimizer_cfg = OmegaConf.to_container(model_cfg.optimizers, resolve=True)
+        optimizer_cfg = cast(
+            Dict[str, dict],
+            OmegaConf.to_container(model_cfg.optimizers, resolve=True),
+        )
     teach_scale = model_cfg.get("teach_scale", 1.0)
     teach_clip = model_cfg.get("teach_clip", 0.0)
-    teach_schedule = {}
+    teach_schedule: Dict[str, float] = {}
     if "teach_schedule" in model_cfg:
-        teach_schedule = OmegaConf.to_container(model_cfg.teach_schedule, resolve=True)  # type: ignore[arg-type]
+        teach_schedule = cast(
+            Dict[str, float],
+            OmegaConf.to_container(model_cfg.teach_schedule, resolve=True),
+        )
     if model_type == "titan":
         titan_spec = LevelSpec(**model_cfg.titan_level)
         titan_cfg = TitanOnlyModelConfig(
@@ -102,6 +134,7 @@ def build_dataloader(
 ) -> Tuple[DataLoader, DistributedSampler | None]:
     dataset = _build_dataset(data_cfg)
     use_sampler = distributed and not isinstance(dataset, IterableDataset)
+    sampler: DistributedSampler[Any] | None
     if use_sampler:
         assert dist_ctx is not None
         sampler = DistributedSampler(
@@ -130,7 +163,7 @@ def build_dataloader(
         sampler=sampler,
         collate_fn=collate_batch,
         num_workers=data_cfg.get("num_workers", 0),
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
         worker_init_fn=worker_init_fn,
         generator=generator,
     )
@@ -170,7 +203,11 @@ def _build_dataset(data_cfg: DictConfig):
     raise ValueError(msg)
 
 
-def compute_teach_signal(model: torch.nn.Module, logits: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
+def compute_teach_signal(
+    model: SupportsLMHead,
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+) -> torch.Tensor:
     """
     Approximate dL/dh where h is the hidden state before the LM head.
     Aligns with CE(logits[:, :-1], tokens[:, 1:]) used in training.
@@ -210,7 +247,7 @@ def _checksum_path(path: str | None) -> str | None:
 def maybe_save_checkpoint(
     cfg: DictConfig,
     model: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
+    optimizer: OptimizerLike,
     *,
     step: int,
     total_steps: int,
@@ -265,12 +302,19 @@ def run_training_loop(
     model = _maybe_compile_model(model, cfg.train.get("compile"))
     if distributed:
         assert dist_ctx is not None
-        ddp_kwargs = {"find_unused_parameters": True}
         if device.type == "cuda":
             idx = device.index if device.index is not None else 0
-            ddp_kwargs["device_ids"] = [idx]
-            ddp_kwargs["output_device"] = idx
-        model = torch.nn.parallel.DistributedDataParallel(model, **ddp_kwargs)
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=[idx],
+                output_device=idx,
+                find_unused_parameters=True,
+            )
+        else:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                find_unused_parameters=True,
+            )
         base_model = model.module
     else:
         base_model = model
@@ -308,7 +352,7 @@ def run_training_loop(
         tokens = batch.to(device)
         _apply_teach_schedule(base_model, cfg, step)
         with autocast_factory():
-            logits = model(tokens) if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model(tokens)
+            logits = model(tokens)
             loss = torch.nn.functional.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
             )
@@ -318,14 +362,18 @@ def run_training_loop(
         optimizer.step()
         update_metrics: Dict[str, float] = {}
         with torch.no_grad():
-            teach_signal = compute_teach_signal(base_model, logits, tokens)
+            teach_signal = compute_teach_signal(cast(SupportsLMHead, base_model), logits, tokens)
             teach_signal_norm = teach_signal.norm(dim=-1).mean().item()
             base_model(tokens, teach_signal=teach_signal)
             if hasattr(base_model, "pop_update_metrics"):
                 update_metrics = base_model.pop_update_metrics()
         if step % log_interval == 0:
             ppl = torch.exp(loss.detach()).item()
-            metrics_payload = {"loss": loss.item(), "ppl": ppl, "teach_signal_norm": teach_signal_norm}
+            metrics_payload = {
+                "loss": loss.item(),
+                "ppl": ppl,
+                "teach_signal_norm": teach_signal_norm,
+            }
             metrics_payload.update(update_metrics)
             logger.log(metrics_payload, step=step)
             if (not distributed) or (dist_ctx and dist_ctx.rank == 0):
@@ -348,7 +396,7 @@ def run_training_loop(
     return metrics
 
 
-def _apply_teach_schedule(model: HOPEModel, cfg: DictConfig, step: int) -> None:
+def _apply_teach_schedule(model: SupportsTeachRuntime, cfg: DictConfig, step: int) -> None:
     schedule = cfg.model.get("teach_schedule")
     base_scale = cfg.model.get("teach_scale", 1.0)
     scale = base_scale
@@ -358,7 +406,12 @@ def _apply_teach_schedule(model: HOPEModel, cfg: DictConfig, step: int) -> None:
             scale *= min(1.0, (step + 1) / warmup)
         decay_start = schedule.get("decay_start")
         decay_duration = schedule.get("decay_duration")
-        if decay_start is not None and decay_duration and decay_duration > 0 and (step + 1) > decay_start:
+        if (
+            decay_start is not None
+            and decay_duration
+            and decay_duration > 0
+            and (step + 1) > decay_start
+        ):
             progress = min(1.0, (step + 1 - decay_start) / decay_duration)
             scale *= max(0.0, 1.0 - progress)
     model.set_teach_runtime(scale=scale)
@@ -372,8 +425,12 @@ def _maybe_compile_model(model: torch.nn.Module, compile_cfg: dict | None) -> to
         kwargs["mode"] = compile_cfg["mode"]
     if "backend" in compile_cfg:
         kwargs["backend"] = compile_cfg["backend"]
+    compile_fn = getattr(torch, "compile", None)
+    if compile_fn is None:  # pragma: no cover - compile only in newer torch builds
+        return model
     try:
-        return torch.compile(model, **kwargs)  # type: ignore[attr-defined]
+        compiled = compile_fn(model, **kwargs)
+        return cast(torch.nn.Module, compiled)
     except Exception as err:  # pragma: no cover - compile is optional
         if compile_cfg.get("strict", False):
             raise
@@ -385,7 +442,7 @@ def _make_autocast_factory(device: torch.device, mp_cfg: dict | None):
     if not mp_cfg or not mp_cfg.get("enabled", False):
         return lambda: nullcontext()
     dtype = _resolve_autocast_dtype(mp_cfg.get("dtype", "bf16"))
-    device_type = "cuda" if device.type == "cuda" else "cpu"
+    device_type = device.type if device.type in {"cuda", "cpu", "mps"} else "cpu"
 
     def factory():
         return torch.autocast(device_type=device_type, dtype=dtype)
@@ -403,8 +460,20 @@ def _resolve_autocast_dtype(name: str) -> torch.dtype:
     raise ValueError(msg)
 
 
-def _build_optimizer(model: torch.nn.Module, cfg: DictConfig, *, device: torch.device) -> torch.optim.Optimizer:
-    optimizer_cfg = getattr(cfg, "optim", {})
+def _build_optimizer(
+    model: torch.nn.Module,
+    cfg: DictConfig,
+    *,
+    device: torch.device,
+) -> OptimizerLike:
+    raw_cfg = cfg.get("optim")
+    optimizer_cfg: DictConfig
+    if raw_cfg is None:
+        optimizer_cfg = OmegaConf.create({})
+    elif isinstance(raw_cfg, DictConfig):
+        optimizer_cfg = raw_cfg
+    else:
+        optimizer_cfg = OmegaConf.create(raw_cfg)
     optim_type = str(optimizer_cfg.get("type", "adamw")).lower()
     if optim_type == "muon":
         return _build_muon_optimizer(model, optimizer_cfg, device=device)
@@ -423,7 +492,12 @@ def _build_optimizer(model: torch.nn.Module, cfg: DictConfig, *, device: torch.d
     return torch.optim.AdamW(model.parameters(), **kwargs)
 
 
-def _build_muon_optimizer(model: torch.nn.Module, optimizer_cfg: DictConfig, *, device: torch.device):
+def _build_muon_optimizer(
+    model: torch.nn.Module,
+    optimizer_cfg: DictConfig,
+    *,
+    device: torch.device,
+) -> OptimizerLike:
     if not hasattr(torch.optim, "Muon"):
         raise RuntimeError("torch.optim.Muon is not available in this PyTorch build")
     lr = optimizer_cfg.get("lr", 1e-3)
@@ -457,8 +531,15 @@ def _build_muon_optimizer(model: torch.nn.Module, optimizer_cfg: DictConfig, *, 
         muon_kwargs["ns_coefficients"] = tuple(ns_coefficients)
     if ns_steps is not None:
         muon_kwargs["ns_steps"] = int(ns_steps)
-    muon_opt = torch.optim.Muon(muon_params, **muon_kwargs) if muon_params else None  # type: ignore[attr-defined]
-    adamw_kwargs = {"lr": lr, "betas": optimizer_cfg.get("betas", (0.9, 0.999)), "weight_decay": weight_decay}
+    if muon_params:
+        muon_opt = torch.optim.Muon(muon_params, **muon_kwargs)  # type: ignore[attr-defined]
+    else:
+        muon_opt = None
+    adamw_kwargs = {
+        "lr": lr,
+        "betas": optimizer_cfg.get("betas", (0.9, 0.999)),
+        "weight_decay": weight_decay,
+    }
     if fused:
         adamw_kwargs["fused"] = True
     adamw_opt = torch.optim.AdamW(adamw_params, **adamw_kwargs) if adamw_params else None
@@ -489,33 +570,33 @@ class _HybridOptimizer:
         self.muon_param_elems = muon_param_elems
         self.adamw_param_elems = adamw_param_elems
 
-    def zero_grad(self) -> None:
+    def zero_grad(self, *args: Any, **kwargs: Any) -> None:
         if self.muon_opt:
-            self.muon_opt.zero_grad()
+            self.muon_opt.zero_grad(*args, **kwargs)
         if self.adamw_opt:
-            self.adamw_opt.zero_grad()
+            self.adamw_opt.zero_grad(*args, **kwargs)
 
-    def step(self) -> None:
+    def step(self, *args: Any, **kwargs: Any) -> None:
         if self.muon_opt:
-            self.muon_opt.step()
+            self.muon_opt.step(*args, **kwargs)
         if self.adamw_opt:
-            self.adamw_opt.step()
+            self.adamw_opt.step(*args, **kwargs)
 
-    def state_dict(self) -> dict:
+    def state_dict(self) -> dict[str, Any]:
         return {
             "muon": self.muon_opt.state_dict() if self.muon_opt else None,
             "adamw": self.adamw_opt.state_dict() if self.adamw_opt else None,
         }
 
-    def load_state_dict(self, state: dict) -> None:
+    def load_state_dict(self, state: dict[str, Any]) -> None:
         if self.muon_opt and state.get("muon") is not None:
             self.muon_opt.load_state_dict(state["muon"])
         if self.adamw_opt and state.get("adamw") is not None:
             self.adamw_opt.load_state_dict(state["adamw"])
 
     @property
-    def param_groups(self):
-        groups = []
+    def param_groups(self) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
         if self.muon_opt:
             groups.extend(self.muon_opt.param_groups)
         if self.adamw_opt:
@@ -531,9 +612,9 @@ class _HybridOptimizer:
 
 def _log_run_features(
     logger: BaseLogger,
-    model: HOPEModel,
+    model: torch.nn.Module,
     cfg: DictConfig,
-    optimizer: torch.optim.Optimizer,
+    optimizer: OptimizerLike,
     device: torch.device,
 ) -> None:
     mp_cfg = cfg.train.get("mixed_precision", {})
@@ -555,7 +636,7 @@ def _log_run_features(
     print(f"[train] run_features {features}")
 
 
-def _detect_flash_attention(model: HOPEModel) -> bool:
+def _detect_flash_attention(model: torch.nn.Module) -> bool:
     blocks = getattr(model, "blocks", [])
     for block in blocks:
         attn = getattr(block, "attn", None)
@@ -592,11 +673,13 @@ def verify_checkpoint_integrity(ckpt_path: Path) -> Dict[str, object]:
     meta_path = ckpt_path.with_suffix(".meta.json")
     if not meta_path.exists():
         raise FileNotFoundError(f"Metadata file {meta_path} missing")
-    metadata = json.loads(meta_path.read_text())
+    metadata: Dict[str, object] = cast(Dict[str, object], json.loads(meta_path.read_text()))
     computed_sha = _checksum_path(str(ckpt_path))
     recorded_sha = metadata.get("checkpoint_sha256")
     if recorded_sha and computed_sha and recorded_sha != computed_sha:
-        raise ValueError(f"Checkpoint SHA mismatch: recorded {recorded_sha} vs computed {computed_sha}")
+        raise ValueError(
+            f"Checkpoint SHA mismatch: recorded {recorded_sha} vs computed {computed_sha}"
+        )
     sha_file = ckpt_path.with_suffix(".sha256")
     if sha_file.exists() and computed_sha:
         recorded_line = sha_file.read_text().strip().split()
@@ -610,7 +693,9 @@ def verify_checkpoint_integrity(ckpt_path: Path) -> Dict[str, object]:
     config_hash = sha256(config_path.read_text().encode("utf-8")).hexdigest()
     recorded_cfg_hash = metadata.get("config_sha256")
     if recorded_cfg_hash and recorded_cfg_hash != config_hash:
-        raise ValueError(f"Config SHA mismatch: recorded {recorded_cfg_hash} vs computed {config_hash}")
+        raise ValueError(
+            f"Config SHA mismatch: recorded {recorded_cfg_hash} vs computed {config_hash}"
+        )
     if "rng_states" not in metadata:
         raise ValueError("Metadata missing rng_states")
     return metadata
@@ -623,7 +708,8 @@ def _capture_rng_states() -> Dict[str, object]:
         "torch": _tensor_state_to_hex(torch.random.get_rng_state()),
     }
     if torch.cuda.is_available():
-        payload["torch_cuda"] = [_tensor_state_to_hex(state) for state in torch.cuda.get_rng_state_all()]  # type: ignore[attr-defined]
+        rng_states = torch.cuda.get_rng_state_all()  # type: ignore[attr-defined]
+        payload["torch_cuda"] = [_tensor_state_to_hex(state) for state in rng_states]
     return payload
 
 

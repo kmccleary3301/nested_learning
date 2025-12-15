@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
-from collections import deque
 import os
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -13,7 +13,10 @@ from tqdm import tqdm
 
 DetectorFactory.seed = 0
 
-app = typer.Typer(add_completion=False, help="Filter datasets by language/length and deduplicate lines.")
+app = typer.Typer(
+    add_completion=False,
+    help="Filter datasets by language/length and deduplicate lines.",
+)
 
 
 def normalize_text(text: str) -> str:
@@ -38,12 +41,24 @@ def main(
     lang_threshold: float = typer.Option(0.80, help="Minimum probability for language detection."),
     min_chars: int = typer.Option(200, help="Minimum character count."),
     max_chars: int = typer.Option(10000, help="Maximum character count."),
-    output_path: Path = typer.Option(Path("data/filtered/output.jsonl"), help="Destination JSONL file."),
-    dedup_window: int = typer.Option(50000, help="Number of recent hashes to retain for deduplication."),
+    output_path: Path = typer.Option(
+        Path("data/filtered/output.jsonl"),
+        help="Destination JSONL file.",
+    ),
+    dedup_window: int = typer.Option(
+        50000,
+        help="Number of recent hashes to retain for deduplication.",
+    ),
     limit: Optional[int] = typer.Option(None, help="Optional limit on records processed."),
     streaming: bool = typer.Option(True, help="Use HF streaming mode."),
-    data_files: Optional[str] = typer.Option(None, help="Optional data_files argument (e.g., local text file)."),
-    force_exit: bool = typer.Option(False, help="Force os._exit(0) to avoid async finalization issues."),
+    data_files: Optional[str] = typer.Option(
+        None,
+        help="Optional data_files argument (e.g., local text file).",
+    ),
+    force_exit: bool = typer.Option(
+        False,
+        help="Force os._exit(0) to avoid async finalization issues.",
+    ),
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     load_kwargs = {}

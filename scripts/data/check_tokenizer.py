@@ -38,7 +38,10 @@ def parse_args() -> argparse.Namespace:
         "--expected-sha256",
         type=str,
         default=None,
-        help="Optional expected checksum; if provided and mismatch occurs, exits with non-zero status.",
+        help=(
+            "Optional expected checksum; if provided and mismatch occurs, "
+            "exits with non-zero status."
+        ),
     )
     parser.add_argument(
         "--metadata-json",

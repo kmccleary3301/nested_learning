@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List
 
 import torch
@@ -55,7 +55,6 @@ def evaluate_segment(
                 reduction="sum",
             )
         total_loss_base += loss.item()
-        token_count = tokens[:, 1:].numel()
         if memorize_cfg.enabled:
             stats = memorize_tokens(model, tokens, memorize_cfg)
             for key, value in stats.items():
@@ -84,7 +83,10 @@ def evaluate_segment(
 @app.command()
 def main(
     config: Path = typer.Option(..., help="Hydra model config for HOPE."),
-    checkpoints: List[Path] = typer.Option(..., help="Ordered list of checkpoints (chronological)."),
+    checkpoints: List[Path] = typer.Option(
+        ...,
+        help="Ordered list of checkpoints (chronological).",
+    ),
     segments_yaml: Path = typer.Option(..., help="YAML describing shard directories per segment."),
     tokenizer_path: Path = typer.Option(..., help="SentencePiece model path (unused for now)."),
     batch_size: int = typer.Option(4, help="Batch size for evaluation."),
@@ -99,7 +101,10 @@ def main(
     ),
     memorize_paths: str = typer.Option(
         "all",
-        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' for default behavior.",
+        help=(
+            "Comma-separated memory paths to update (e.g., 'titan,cms_fast'); "
+            "use 'all' for default behavior."
+        ),
     ),
 ) -> None:
     segments = load_segments(segments_yaml)
@@ -143,7 +148,13 @@ def main(
             name = segment["name"]
             shards_dir = Path(segment["shards_dir"])
             dataset = TokenShardDataset(shards_dir)
-            loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=collate_batch)
+            loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=0,
+                collate_fn=collate_batch,
+            )
             base_loss, mem_loss, stats = evaluate_segment(
                 model,
                 loader,

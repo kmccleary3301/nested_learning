@@ -30,3 +30,7 @@ wandb/
 .DS_Store
 .idea/
 .vscode/
+.bootstrap-venv/
+.pip-cache/
+.uv-cache/
+.uv-python/
