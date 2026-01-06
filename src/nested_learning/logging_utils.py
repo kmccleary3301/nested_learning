@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -40,7 +40,7 @@ class WandbLogger(BaseLogger):
 
         project = cfg.get("project", "nested-learning")
         run_name = cfg.get("run_name")
-        config_dict = OmegaConf.to_container(full_cfg, resolve=True)
+        config_dict = cast(dict[str, Any], OmegaConf.to_container(full_cfg, resolve=True))
         self.run = wandb.init(project=project, name=run_name, config=config_dict)
 
     def log(self, metrics: Dict[str, Any], step: int) -> None:

@@ -25,7 +25,7 @@ def compute_tokenizer_coverage_stats(
     total_chars = 0
     processed_lines = 0
     word_token_lengths: list[int] = []
-    piece_lengths = Counter()
+    piece_lengths: Counter[int] = Counter()
 
     with sample_file.open("r", encoding="utf-8") as handle:
         for idx, line in enumerate(handle):

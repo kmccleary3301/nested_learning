@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, cast
 
 import torch
 from torch import nn
@@ -40,8 +40,10 @@ def build_block_fast_state(
     level_cfg = LevelConfig(specs=specs, optimizer_configs=optimizer_configs, default_lr=default_lr)
     level_manager = LevelOptimizerManager(level_cfg)
     selfmod_state = None
-    if selfmod_module is not None and hasattr(selfmod_module, "init_fast_state"):
-        selfmod_state = selfmod_module.init_fast_state()
+    if selfmod_module is not None:
+        init_fn = getattr(selfmod_module, "init_fast_state", None)
+        if callable(init_fn):
+            selfmod_state = cast(SelfModifyingTitansState, init_fn())
     return BlockFastState(
         titan_params=titan_params,
         cms_params=cms_params,

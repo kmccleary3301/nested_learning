@@ -58,7 +58,10 @@ ignore = []
 [tool.mypy]
 python_version = 3.12
 warn_unused_configs = true
-warn_return_any = true
+# PyTorch-style codebases inevitably interact with untyped third-party deps and dynamic module calls.
+# Keep mypy enabled, but avoid noisy `Any` return warnings for nn.Module forward calls.
+ignore_missing_imports = true
+warn_return_any = false
 strict_optional = true
 show_error_codes = true
 pretty = true

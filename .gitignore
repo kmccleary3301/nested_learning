@@ -26,6 +26,7 @@ docs/planner_check2_attachments.zip
 docs/tmp/
 docs_tmp/
 wandb/
+eval/*_ci.json
 
 # Local paper scans / scratch references (keep tracked references separate)
 google_papers/*_arXiv_v1.pdf

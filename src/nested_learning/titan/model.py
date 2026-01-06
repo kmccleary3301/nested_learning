@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, cast
 
 import torch
 import torch.nn as nn
@@ -220,7 +220,7 @@ class TitanOnlyModel(nn.Module):
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self._surprise_threshold = threshold
         for block in self.blocks:
-            block.set_surprise_threshold(threshold)
+            cast(TitanOnlyBlock, block).set_surprise_threshold(threshold)
 
     def get_surprise_threshold(self) -> float | None:
         return self._surprise_threshold
@@ -231,7 +231,7 @@ class TitanOnlyModel(nn.Module):
             enabled = False
         self._updates_enabled = enabled
         for block in self.blocks:
-            block.set_enabled(enabled)
+            cast(TitanOnlyBlock, block).set_enabled(enabled)
 
     def get_allowed_update_levels(self) -> set[str] | None:
         if self._updates_enabled:
@@ -273,20 +273,21 @@ class TitanOnlyModel(nn.Module):
         for p in self.lm_head.parameters():
             p.requires_grad = False
         for block in self.blocks:
-            if hasattr(block, "attn"):
-                for p in block.attn.parameters():
-                    p.requires_grad = False
+            typed_block = cast(TitanOnlyBlock, block)
+            for p in typed_block.attn.parameters():
+                p.requires_grad = False
 
     def init_fast_state(self) -> ModelFastState:
         states = []
         for block in self.blocks:
-            specs = [block.config.titan_level]
+            typed_block = cast(TitanOnlyBlock, block)
+            specs = [typed_block.config.titan_level]
             state = build_block_fast_state(
-                titan_module=block.titan_memory,
+                titan_module=typed_block.titan_memory,
                 cms_blocks={},
                 specs=specs,
-                optimizer_configs=block.config.optimizers or {},
-                default_lr=block.config.self_mod_lr,
+                optimizer_configs=typed_block.config.optimizers or {},
+                default_lr=typed_block.config.self_mod_lr,
             )
             states.append(state)
         return ModelFastState(blocks=states)

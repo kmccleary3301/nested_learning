@@ -190,9 +190,10 @@ class SelfModifyingTitans(nn.Module):
         other_chunk = int(
             self.config.chunk_size_other if chunk_size_other is None else chunk_size_other
         )
-        memory_chunk = int(
-            self.config.chunk_size_memory if chunk_size_memory is None else chunk_size_memory
-        )
+        memory_chunk_cfg = self.config.chunk_size_memory
+        if memory_chunk_cfg is None:
+            memory_chunk_cfg = self.config.chunk_size_other
+        memory_chunk = int(memory_chunk_cfg if chunk_size_memory is None else chunk_size_memory)
         if other_chunk <= 0 or memory_chunk <= 0:
             raise ValueError("chunk sizes must be positive")
 
@@ -424,7 +425,7 @@ class SelfModifyingTitans(nn.Module):
 
         if w_skip is None:
 
-            def loss_fn(
+            def loss_fn_noskip(
                 w1_t: torch.Tensor,
                 w2_t: torch.Tensor,
                 k_t: torch.Tensor,
@@ -441,7 +442,7 @@ class SelfModifyingTitans(nn.Module):
                     loss = (pred - vhat).pow(2).sum(dim=-1)
                 return loss.sum()
 
-            grad_fn = grad(loss_fn, argnums=(0, 1))
+            grad_fn = grad(loss_fn_noskip, argnums=(0, 1))
             g1_tokens, g2_tokens = vmap(grad_fn, in_dims=(None, None, 0, 0))(
                 w1,
                 w2,
@@ -450,7 +451,7 @@ class SelfModifyingTitans(nn.Module):
             )
             return g1_tokens.transpose(0, 1), g2_tokens.transpose(0, 1), None
 
-        def loss_fn(
+        def loss_fn_skip(
             w1_t: torch.Tensor,
             w2_t: torch.Tensor,
             w_skip_t: torch.Tensor,
@@ -468,7 +469,7 @@ class SelfModifyingTitans(nn.Module):
                 loss = (pred - vhat).pow(2).sum(dim=-1)
             return loss.sum()
 
-        grad_fn = grad(loss_fn, argnums=(0, 1, 2))
+        grad_fn = grad(loss_fn_skip, argnums=(0, 1, 2))
         g1_tokens, g2_tokens, gskip_tokens = vmap(
             grad_fn,
             in_dims=(None, None, None, 0, 0),

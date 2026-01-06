@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -84,25 +83,30 @@ class SelfAttention(nn.Module):
     ) -> torch.Tensor:
         dropout_p = self.config.dropout if self.training else 0.0
         device_type = q.device.type
-        ctx = nullcontext()
         if (
             device_type == "cuda"
             and torch.cuda.is_available()
             and hasattr(torch.backends, "cuda")
             and hasattr(torch.backends.cuda, "sdp_kernel")
         ):
-            ctx = torch.backends.cuda.sdp_kernel(  # type: ignore[attr-defined]
+            with torch.backends.cuda.sdp_kernel(  # type: ignore[attr-defined]
                 enable_flash=self.config.use_flash,
                 enable_mem_efficient=True,
                 enable_math=not self.config.use_flash,
-            )
-        with ctx:
-            attn = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                dropout_p=dropout_p,
-                is_causal=self.config.causal,
-            )
-        return attn
+            ):
+                return F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=dropout_p,
+                    is_causal=self.config.causal,
+                )
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=None,
+            dropout_p=dropout_p,
+            is_causal=self.config.causal,
+        )

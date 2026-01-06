@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Protocol, Tuple, cast
 
 import numpy as np
 import torch
@@ -43,22 +43,28 @@ def unwrap_config(cfg: DictConfig) -> DictConfig:
     if "model" in cfg:
         return cfg
     if "hope" in cfg:
-        return cfg.hope
+        return cast(DictConfig, cfg.hope)
     if "ablations" in cfg:
-        return cfg.ablations
+        return cast(DictConfig, cfg.ablations)
     return cfg
 
 
 def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
     model_type = model_cfg.get("type", "hope")
-    optimizer_cfg = {}
+    optimizer_cfg: Dict[str, dict] = {}
     if "optimizers" in model_cfg:
-        optimizer_cfg = OmegaConf.to_container(model_cfg.optimizers, resolve=True)
+        optimizer_cfg = cast(
+            Dict[str, dict],
+            OmegaConf.to_container(model_cfg.optimizers, resolve=True),
+        )
     teach_scale = model_cfg.get("teach_scale", 1.0)
     teach_clip = model_cfg.get("teach_clip", 0.0)
-    teach_schedule = {}
+    teach_schedule: Dict[str, float] = {}
     if "teach_schedule" in model_cfg:
-        teach_schedule = OmegaConf.to_container(model_cfg.teach_schedule, resolve=True)  # type: ignore[arg-type]
+        teach_schedule = cast(
+            Dict[str, float],
+            OmegaConf.to_container(model_cfg.teach_schedule, resolve=True),
+        )
     qk_l2_norm = bool(model_cfg.get("qk_l2_norm", False))
     local_conv_window_raw = model_cfg.get("local_conv_window")
     local_conv_window = None if local_conv_window_raw is None else int(local_conv_window_raw)
@@ -131,7 +137,7 @@ def build_dataloader(
     use_sampler = distributed and not isinstance(dataset, IterableDataset)
     if use_sampler:
         assert dist_ctx is not None
-        sampler = DistributedSampler(
+        sampler: DistributedSampler | None = DistributedSampler(
             dataset,
             num_replicas=dist_ctx.world_size,
             rank=dist_ctx.rank,
@@ -198,7 +204,7 @@ def _build_dataset(data_cfg: DictConfig):
 
 
 def compute_teach_signal(
-    model: torch.nn.Module, logits: torch.Tensor, tokens: torch.Tensor
+    model: "_HasLMHead", logits: torch.Tensor, tokens: torch.Tensor
 ) -> torch.Tensor:
     """
     Approximate dL/dh where h is the hidden state before the LM head.
@@ -221,6 +227,10 @@ def compute_teach_signal(
         dtype=grad.dtype,
     )
     return torch.cat([grad, pad], dim=1)
+
+
+class _HasLMHead(Protocol):
+    lm_head: torch.nn.Linear
 
 
 def _checksum_path(path: str | None) -> str | None:
@@ -294,12 +304,19 @@ def run_training_loop(
     model = _maybe_compile_model(model, cfg.train.get("compile"))
     if distributed:
         assert dist_ctx is not None
-        ddp_kwargs = {"find_unused_parameters": True}
         if device.type == "cuda":
             idx = device.index if device.index is not None else 0
-            ddp_kwargs["device_ids"] = [idx]
-            ddp_kwargs["output_device"] = idx
-        model = torch.nn.parallel.DistributedDataParallel(model, **ddp_kwargs)
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=[idx],
+                output_device=idx,
+                find_unused_parameters=True,
+            )
+        else:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                find_unused_parameters=True,
+            )
         base_model = model.module
     else:
         base_model = model
@@ -415,7 +432,7 @@ def _maybe_compile_model(model: torch.nn.Module, compile_cfg: dict | None) -> to
     if "backend" in compile_cfg:
         kwargs["backend"] = compile_cfg["backend"]
     try:
-        return torch.compile(model, **kwargs)  # type: ignore[attr-defined]
+        return cast(torch.nn.Module, torch.compile(model, **kwargs))  # type: ignore[attr-defined]
     except Exception as err:  # pragma: no cover - compile is optional
         if compile_cfg.get("strict", False):
             raise
@@ -448,7 +465,11 @@ def _resolve_autocast_dtype(name: str) -> torch.dtype:
 def _build_optimizer(
     model: torch.nn.Module, cfg: DictConfig, *, device: torch.device
 ) -> torch.optim.Optimizer:
-    optimizer_cfg = getattr(cfg, "optim", {})
+    optimizer_cfg_raw = cfg.get("optim")
+    if isinstance(optimizer_cfg_raw, DictConfig):
+        optimizer_cfg = optimizer_cfg_raw
+    else:
+        optimizer_cfg = cast(DictConfig, OmegaConf.create(optimizer_cfg_raw or {}))
     optim_type = str(optimizer_cfg.get("type", "adamw")).lower()
     if optim_type == "muon":
         return _build_muon_optimizer(model, optimizer_cfg, device=device)

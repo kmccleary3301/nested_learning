@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -12,7 +12,7 @@ from .factory import build_optimizer
 
 @dataclass
 class LevelConfig:
-    specs: Iterable[LevelSpec]
+    specs: Sequence[LevelSpec]
     optimizer_configs: Dict[str, dict]
     default_lr: float
 

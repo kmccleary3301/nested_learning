@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Sequence
+from typing import Dict, Protocol, Sequence, cast
 
 import torch
 import torch.nn as nn
@@ -66,7 +66,7 @@ class HOPEModel(nn.Module):
         self._allowed_update_layers: set[int] | None = None
         variant = str(config.block_variant).strip().lower()
         if variant == "hope_attention":
-            block_config = HOPEAttentionBlockConfig(
+            attn_block_config = HOPEAttentionBlockConfig(
                 dim=config.dim,
                 heads=config.heads,
                 cms_levels=config.cms_levels,
@@ -76,10 +76,10 @@ class HOPEModel(nn.Module):
                 optimizer_configs=config.optimizers or {},
             )
             self.blocks = nn.ModuleList(
-                [HOPEAttentionBlock(block_config) for _ in range(config.num_layers)]
+                [HOPEAttentionBlock(attn_block_config) for _ in range(config.num_layers)]
             )
         elif variant == "hope_hybrid":
-            block_config = HOPEBlockConfig(
+            hybrid_block_config = HOPEBlockConfig(
                 dim=config.dim,
                 heads=config.heads,
                 titan_level=config.titan_level,
@@ -90,9 +90,11 @@ class HOPEModel(nn.Module):
                 self_mod_hidden=config.self_mod_hidden,
                 optimizer_configs=config.optimizers or {},
             )
-            self.blocks = nn.ModuleList([HOPEBlock(block_config) for _ in range(config.num_layers)])
+            self.blocks = nn.ModuleList(
+                [HOPEBlock(hybrid_block_config) for _ in range(config.num_layers)]
+            )
         elif variant == "hope_selfmod":
-            block_config = HOPESelfModBlockConfig(
+            selfmod_block_config = HOPESelfModBlockConfig(
                 dim=config.dim,
                 cms_levels=config.cms_levels,
                 qk_l2_norm=config.qk_l2_norm,
@@ -108,10 +110,10 @@ class HOPEModel(nn.Module):
                 optimizer_configs=config.optimizers or {},
             )
             self.blocks = nn.ModuleList(
-                [HOPESelfModBlock(block_config) for _ in range(config.num_layers)]
+                [HOPESelfModBlock(selfmod_block_config) for _ in range(config.num_layers)]
             )
         elif variant == "transformer":
-            block_config = TransformerBlockConfig(
+            transformer_block_config = TransformerBlockConfig(
                 dim=config.dim,
                 heads=config.heads,
                 mlp_hidden_multiplier=config.transformer_mlp_hidden_multiplier,
@@ -120,7 +122,7 @@ class HOPEModel(nn.Module):
                 local_conv_window=config.local_conv_window,
             )
             self.blocks = nn.ModuleList(
-                [TransformerBlock(block_config) for _ in range(config.num_layers)]
+                [TransformerBlock(transformer_block_config) for _ in range(config.num_layers)]
             )
         else:
             raise ValueError(
@@ -145,7 +147,7 @@ class HOPEModel(nn.Module):
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self._surprise_threshold = threshold
         for block in self.blocks:
-            block.set_surprise_threshold(threshold)
+            cast(_UpdateControlledBlock, block).set_surprise_threshold(threshold)
 
     def get_surprise_threshold(self) -> float | None:
         return self._surprise_threshold
@@ -153,7 +155,7 @@ class HOPEModel(nn.Module):
     def set_allowed_update_levels(self, levels: set[str] | None) -> None:
         self._allowed_update_levels = levels.copy() if levels is not None else None
         for block in self.blocks:
-            block.set_allowed_levels(self._allowed_update_levels)
+            cast(_UpdateControlledBlock, block).set_allowed_levels(self._allowed_update_levels)
 
     def get_allowed_update_levels(self) -> set[str] | None:
         return None if self._allowed_update_levels is None else self._allowed_update_levels.copy()
@@ -254,8 +256,9 @@ class HOPEModel(nn.Module):
     def _gather_block_stats(self) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
         for idx, block in enumerate(self.blocks):
-            if hasattr(block, "pop_update_stats"):
-                stats = block.pop_update_stats()
+            pop_fn = getattr(block, "pop_update_stats", None)
+            if callable(pop_fn):
+                stats = cast(Dict[str, Dict[str, float]], pop_fn())
                 for level_name, payload in stats.items():
                     prefix = f"layer{idx}.{level_name}"
                     for key, value in payload.items():
@@ -326,6 +329,13 @@ class HOPEModel(nn.Module):
         for p in self.lm_head.parameters():
             p.requires_grad = False
         for block in self.blocks:
-            if hasattr(block, "attn"):
-                for p in block.attn.parameters():
+            attn = getattr(block, "attn", None)
+            if isinstance(attn, nn.Module):
+                for p in attn.parameters():
                     p.requires_grad = False
+
+
+class _UpdateControlledBlock(Protocol):
+    def set_surprise_threshold(self, threshold: float | None) -> None: ...
+
+    def set_allowed_levels(self, allowed: set[str] | None) -> None: ...
