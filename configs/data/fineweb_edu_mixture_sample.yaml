@@ -1,0 +1,14 @@
+name: fineweb_edu_sample
+tokenizer_output_dir: artifacts/tokenizer/fineweb_edu
+datasets:
+  - name: fineweb_edu
+    dataset: HuggingFaceFW/fineweb-edu
+    subset: sample-10BT
+    split: train
+    text_column: text
+    sample_limit: 5000
+    seq_len: 2048
+    sequences_per_shard: 1024
+    output_dir: data/shards/fineweb_edu_sample
+    max_records: 10000
+

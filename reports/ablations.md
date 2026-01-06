@@ -115,6 +115,25 @@ All outputs are copied to `artifacts/pilot_release/` via `scripts/package_pilot_
 
 Mark each queue item ✅/⏳/⚠️ as it progresses so we know which ablations have data ready for reporting.
 
+## 9. Phase 3 – Self-modifying Titans (paper HOPE scaffold)
+
+The paper-defined `hope_selfmod` scaffold (`Self-modifying Titans → CMS`) has its own knobs and
+ablation-ready configs. These are intended for **implementation validation** and small-scale
+experiments (not paper-scale reproduction).
+
+| Config | Variant | Key override(s) |
+|--------|---------|-----------------|
+| `configs/hope/pilot_selfmod.yaml` | Pilot defaults | `model.block_variant=hope_selfmod`, `self_mod_chunk_size=8`, `self_mod_chunk_size_memory=64` |
+| `configs/ablations/selfmod_rank1_precond_off.yaml` | No DGD preconditioner | `model.self_mod_use_rank1_precond=false` |
+| `configs/ablations/selfmod_no_alpha.yaml` | No alpha/decay | `model.self_mod_use_alpha=false` |
+| `configs/ablations/selfmod_chunked_8_64.yaml` | Explicit chunking | `model.self_mod_chunk_size=8`, `model.self_mod_chunk_size_memory=64` |
+| `configs/ablations/selfmod_no_cms.yaml` | Selfmod-only | `model.cms_levels=[]` |
+| `configs/ablations/selfmod_momentum_on.yaml` | Momentum on | `model.self_mod_momentum=0.9` |
+| `configs/ablations/selfmod_momentum_off.yaml` | Momentum off | `model.self_mod_momentum=0.0` |
+
+These configs require `src/nested_learning/training.py:build_model_from_cfg()` to plumb the self-mod
+fields through `ModelConfig`; this is covered by `tests/test_build_model_from_cfg_selfmod.py`.
+
 ## 8. Baseline comparison (HOPE step 230k vs TITAN step 25k)
 | Metric | HOPE | TITAN | Notes |
 |--------|------|-------|-------|

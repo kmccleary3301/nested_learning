@@ -44,6 +44,7 @@ class ModelConfig:
     self_mod_objective: str = "l2"
     self_mod_stopgrad_vhat: bool = True
     self_mod_use_rank1_precond: bool = True
+    self_mod_use_alpha: bool = True
     self_mod_momentum: float = 0.0
     transformer_mlp_hidden_multiplier: int = 4
     transformer_activation: str = "gelu"
@@ -100,6 +101,7 @@ class HOPEModel(nn.Module):
                 selfmod_objective=config.self_mod_objective,
                 selfmod_stopgrad_vhat=config.self_mod_stopgrad_vhat,
                 selfmod_use_rank1_precond=config.self_mod_use_rank1_precond,
+                selfmod_use_alpha=config.self_mod_use_alpha,
                 selfmod_momentum=config.self_mod_momentum,
                 self_mod_lr=config.self_mod_lr,
                 optimizer_configs=config.optimizers or {},

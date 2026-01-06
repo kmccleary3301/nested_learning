@@ -23,6 +23,7 @@ class DatasetSpec:
     subset: str | None = None
     text_column: str = "text"
     sample_limit: int = 100_000
+    data_files: str | None = None
 
 
 def _load_specs_from_manifest(manifest: Path) -> List[DatasetSpec]:
@@ -38,13 +39,38 @@ def _load_specs_from_manifest(manifest: Path) -> List[DatasetSpec]:
                 subset=entry.get("subset"),
                 text_column=entry.get("text_column", "text"),
                 sample_limit=entry.get("sample_limit", 100_000),
+                data_files=entry.get("data_files"),
             )
         )
     return specs
 
 
 def _write_samples(spec: DatasetSpec, handle) -> int:
-    ds = load_dataset(spec.dataset, spec.subset, split=spec.split, streaming=True)
+    load_kwargs = {}
+    if spec.data_files is not None:
+        load_kwargs["data_files"] = {spec.split: spec.data_files}
+    try:
+        ds = load_dataset(
+            spec.dataset, spec.subset, split=spec.split, streaming=True, **load_kwargs
+        )
+    except ValueError as err:
+        msg = str(err)
+        if "Bad split" not in msg:
+            raise
+        ds_dict = load_dataset(spec.dataset, spec.subset, streaming=True, **load_kwargs)
+        available = list(ds_dict.keys())
+        if not available:
+            raise
+        fallback = (
+            "train"
+            if "train" in available
+            else ("test" if "test" in available else available[0])
+        )
+        typer.echo(
+            f"[Tokenizer] Requested split '{spec.split}' unavailable for {spec.dataset}; "
+            f"using '{fallback}'"
+        )
+        ds = ds_dict[fallback]
     count = 0
     for row in ds:
         text = row.get(spec.text_column)

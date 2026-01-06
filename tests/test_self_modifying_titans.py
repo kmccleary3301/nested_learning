@@ -54,7 +54,7 @@ def test_self_modifying_titans_chunked_outputs_match_no_update_with_single_chunk
     assert not torch.allclose(before.unsqueeze(0), updated.memory.w2)
 
 
-def test_self_modifying_titans_dual_chunk_schedule_respects_memory_frequency() -> None:
+def test_self_modifying_titans_flushes_partial_chunks_for_memory_updates() -> None:
     torch.manual_seed(0)
     model = SelfModifyingTitans(
         SelfModifyingTitansConfig(
@@ -72,4 +72,4 @@ def test_self_modifying_titans_dual_chunk_schedule_respects_memory_frequency() -
     _out, updated = model.forward_with_updates(x, state)
 
     assert not torch.allclose(before_other.unsqueeze(0), updated.k.w2)
-    assert torch.allclose(before_memory.unsqueeze(0), updated.memory.w2, atol=1e-6)
+    assert not torch.allclose(before_memory.unsqueeze(0), updated.memory.w2)

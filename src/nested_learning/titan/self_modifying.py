@@ -18,6 +18,7 @@ class SelfModifyingTitansConfig:
     objective: str = "l2"
     stopgrad_vhat: bool = True
     use_rank1_precond: bool = True
+    use_alpha: bool = True
     momentum: float = 0.0
     qk_l2_norm: bool = True
     eps: float = 1e-6
@@ -196,48 +197,109 @@ class SelfModifyingTitans(nn.Module):
             raise ValueError("chunk sizes must be positive")
 
         outputs: list[torch.Tensor] = []
-        other_buffer: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
-        memory_buffer: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        other_k: list[torch.Tensor] = []
+        other_v: list[torch.Tensor] = []
+        other_eta: list[torch.Tensor] = []
+        other_alpha: list[torch.Tensor] = []
+        memory_k: list[torch.Tensor] = []
+        memory_v: list[torch.Tensor] = []
+        memory_eta: list[torch.Tensor] = []
+        memory_alpha: list[torch.Tensor] = []
+
+        def _next_boundary(idx: int, *, chunk_size: int) -> int:
+            if chunk_size <= 0:
+                raise ValueError("chunk_size must be positive")
+            return min(((idx // chunk_size) + 1) * chunk_size, seq_len)
 
         with torch.no_grad():
-            for t in range(seq_len):
-                x_t = x[:, t, :]
-                k_t = self._memory_forward(x_t, state.k)
-                v_t = self._memory_forward(x_t, state.v)
-                q_t = self._memory_forward(x_t, state.q)
+            idx = 0
+            while idx < seq_len:
+                next_other = _next_boundary(idx, chunk_size=other_chunk)
+                next_memory = _next_boundary(idx, chunk_size=memory_chunk)
+                end = min(next_other, next_memory, seq_len)
+                x_chunk = x[:, idx:end, :]
+
+                k_chunk = self._memory_forward(x_chunk, state.k)
+                v_chunk = self._memory_forward(x_chunk, state.v)
+                q_chunk = self._memory_forward(x_chunk, state.q)
                 if self.config.qk_l2_norm:
-                    k_t = F.normalize(k_t, dim=-1, eps=self.config.eps)
-                    q_t = F.normalize(q_t, dim=-1, eps=self.config.eps)
+                    k_chunk = F.normalize(k_chunk, dim=-1, eps=self.config.eps)
+                    q_chunk = F.normalize(q_chunk, dim=-1, eps=self.config.eps)
+                eta_chunk = self._memory_forward(x_chunk, state.eta).squeeze(-1)
+                eta_chunk = F.softplus(eta_chunk) * self.config.eta_scale
+                if self.config.use_alpha:
+                    alpha_chunk = self._memory_forward(x_chunk, state.alpha).squeeze(-1)
+                    alpha_chunk = torch.sigmoid(alpha_chunk)
+                else:
+                    alpha_chunk = torch.ones_like(eta_chunk)
+                o_chunk = self._memory_forward(q_chunk, state.memory)
+                outputs.append(o_chunk)
 
-                eta_t = self._memory_forward(x_t, state.eta).squeeze(-1)
-                eta_t = F.softplus(eta_t) * self.config.eta_scale
-                alpha_t = self._memory_forward(x_t, state.alpha).squeeze(-1)
-                alpha_t = torch.sigmoid(alpha_t)
+                other_k.append(k_chunk)
+                other_v.append(v_chunk)
+                other_eta.append(eta_chunk)
+                other_alpha.append(alpha_chunk)
+                memory_k.append(k_chunk)
+                memory_v.append(v_chunk)
+                memory_eta.append(eta_chunk)
+                memory_alpha.append(alpha_chunk)
 
-                o_t = self._memory_forward(q_t, state.memory)
-                outputs.append(o_t)
+                idx = end
 
-                item = (k_t, v_t, eta_t, alpha_t)
-                other_buffer.append(item)
-                memory_buffer.append(item)
-
-                if (t + 1) % other_chunk == 0:
-                    self._apply_chunk_update(
+                if idx == next_other and other_k:
+                    other_memories: tuple[str, ...] = ("k", "v", "q", "eta")
+                    if self.config.use_alpha:
+                        other_memories = (*other_memories, "alpha")
+                    self._apply_chunk_update_seq(
                         state,
-                        other_buffer,
-                        memories=("k", "v", "q", "eta", "alpha"),
+                        k_seq=torch.cat(other_k, dim=1),
+                        v_seq=torch.cat(other_v, dim=1),
+                        eta_seq=torch.cat(other_eta, dim=1),
+                        alpha_seq=torch.cat(other_alpha, dim=1),
+                        memories=other_memories,
                     )
-                    other_buffer.clear()
+                    other_k.clear()
+                    other_v.clear()
+                    other_eta.clear()
+                    other_alpha.clear()
 
-                if (t + 1) % memory_chunk == 0:
-                    self._apply_chunk_update(
+                if idx == next_memory and memory_k:
+                    self._apply_chunk_update_seq(
                         state,
-                        memory_buffer,
+                        k_seq=torch.cat(memory_k, dim=1),
+                        v_seq=torch.cat(memory_v, dim=1),
+                        eta_seq=torch.cat(memory_eta, dim=1),
+                        alpha_seq=torch.cat(memory_alpha, dim=1),
                         memories=("memory",),
                     )
-                    memory_buffer.clear()
+                    memory_k.clear()
+                    memory_v.clear()
+                    memory_eta.clear()
+                    memory_alpha.clear()
 
-        return torch.stack(outputs, dim=1), state
+            if other_k:
+                other_memories = ("k", "v", "q", "eta")
+                if self.config.use_alpha:
+                    other_memories = (*other_memories, "alpha")
+                self._apply_chunk_update_seq(
+                    state,
+                    k_seq=torch.cat(other_k, dim=1),
+                    v_seq=torch.cat(other_v, dim=1),
+                    eta_seq=torch.cat(other_eta, dim=1),
+                    alpha_seq=torch.cat(other_alpha, dim=1),
+                    memories=other_memories,
+                )
+            if memory_k:
+                self._apply_chunk_update_seq(
+                    state,
+                    k_seq=torch.cat(memory_k, dim=1),
+                    v_seq=torch.cat(memory_v, dim=1),
+                    eta_seq=torch.cat(memory_eta, dim=1),
+                    alpha_seq=torch.cat(memory_alpha, dim=1),
+                    memories=("memory",),
+                )
+
+        return torch.cat(outputs, dim=1), state
 
     def _apply_chunk_update(
         self,
@@ -252,6 +314,25 @@ class SelfModifyingTitans(nn.Module):
         v_seq = torch.stack([item[1] for item in buffer], dim=1)
         eta_seq = torch.stack([item[2] for item in buffer], dim=1)
         alpha_seq = torch.stack([item[3] for item in buffer], dim=1)
+        self._apply_chunk_update_seq(
+            state,
+            k_seq=k_seq,
+            v_seq=v_seq,
+            eta_seq=eta_seq,
+            alpha_seq=alpha_seq,
+            memories=memories,
+        )
+
+    def _apply_chunk_update_seq(
+        self,
+        state: SelfModifyingTitansState,
+        *,
+        k_seq: torch.Tensor,
+        v_seq: torch.Tensor,
+        eta_seq: torch.Tensor,
+        alpha_seq: torch.Tensor,
+        memories: tuple[str, ...],
+    ) -> None:
         steps = k_seq.size(1)
         dim = self.config.dim
         eye = (

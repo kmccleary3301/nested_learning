@@ -1,0 +1,21 @@
+defaults:
+  - /pilot
+  - _self_
+
+model:
+  block_variant: hope_selfmod
+  self_mod_chunk_size: 8
+  self_mod_chunk_size_memory: 64
+
+train:
+  steps: 5000
+  device: "cuda:1"
+  checkpoint:
+    dir: artifacts/checkpoints/pilot_selfmod_chunked_8_64
+    save_interval: 1000
+
+logging:
+  enabled: true
+  backend: json
+  path: logs/pilot_selfmod_chunked_8_64_metrics.json
+  run_name: pilot-selfmod-chunked-8-64

@@ -1,0 +1,20 @@
+defaults:
+  - /pilot
+  - _self_
+
+model:
+  block_variant: hope_selfmod
+  self_mod_use_rank1_precond: false
+
+train:
+  steps: 5000
+  device: "cuda:1"
+  checkpoint:
+    dir: artifacts/checkpoints/pilot_selfmod_rank1_off
+    save_interval: 1000
+
+logging:
+  enabled: true
+  backend: json
+  path: logs/pilot_selfmod_rank1_off_metrics.json
+  run_name: pilot-selfmod-rank1-off

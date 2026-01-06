@@ -302,6 +302,7 @@ class HOPESelfModBlockConfig:
     selfmod_objective: str = "l2"
     selfmod_stopgrad_vhat: bool = True
     selfmod_use_rank1_precond: bool = True
+    selfmod_use_alpha: bool = True
     selfmod_momentum: float = 0.0
     self_mod_lr: float = 1e-3
     optimizer_configs: Dict[str, dict] = field(default_factory=dict)
@@ -329,6 +330,7 @@ class HOPESelfModBlock(nn.Module):
                 objective=config.selfmod_objective,
                 stopgrad_vhat=config.selfmod_stopgrad_vhat,
                 use_rank1_precond=config.selfmod_use_rank1_precond,
+                use_alpha=config.selfmod_use_alpha,
                 momentum=config.selfmod_momentum,
                 qk_l2_norm=config.qk_l2_norm,
             )

@@ -58,8 +58,29 @@ def main(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     load_kwargs = {}
     if data_files is not None:
-        load_kwargs["data_files"] = data_files
-    dataset_obj = load_dataset(dataset, subset, split=split, streaming=streaming, **load_kwargs)
+        # Ensure the requested split exists for local files (HF `text` dataset defaults can be odd).
+        load_kwargs["data_files"] = {split: data_files}
+    try:
+        dataset_obj = load_dataset(
+            dataset, subset, split=split, streaming=streaming, **load_kwargs
+        )
+    except ValueError as err:
+        msg = str(err)
+        if "Bad split" not in msg:
+            raise
+        ds_dict = load_dataset(dataset, subset, streaming=streaming, **load_kwargs)
+        if not hasattr(ds_dict, "keys"):
+            raise
+        available = list(ds_dict.keys())
+        if not available:
+            raise
+        fallback = (
+            "train"
+            if "train" in available
+            else ("test" if "test" in available else available[0])
+        )
+        typer.echo(f"[Filter] Requested split '{split}' unavailable; using '{fallback}'")
+        dataset_obj = ds_dict[fallback]
     iterator = dataset_obj if streaming else iter(dataset_obj)
     seen_hashes = set()
     hash_queue = deque()

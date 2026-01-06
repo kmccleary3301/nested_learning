@@ -54,3 +54,17 @@ For larger GPU-backed pilots, use the dedicated Hydra configs:
 
 and rerun the comparison script on the resulting checkpoints.
 
+## 3) Adaptation sanity check (no training)
+
+This repo also includes a deterministic unit-level smoke that demonstrates **in-context adaptation**
+exists for `hope_attention` (via CMS fast-state updates) and is absent for `transformer`:
+
+```bash
+uv run pytest -q tests/test_phase2_memorization_delta.py
+```
+
+For a standalone JSON output (no tokenizer/checkpoints required):
+
+```bash
+uv run python scripts/eval/phase2_memorization_delta_smoke.py --device cpu
+```

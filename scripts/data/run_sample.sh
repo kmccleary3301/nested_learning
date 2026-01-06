@@ -2,6 +2,7 @@
 set -euo pipefail
 
 TOKENIZER_MODEL=${1:-artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model}
+TOKENIZER_DIR="$(dirname "${TOKENIZER_MODEL}")"
 
 if [[ ! -f "data/filtered/refinedweb_en_sample.txt" ]]; then
   echo "[Data] Creating filtered RefinedWeb sample"
@@ -66,6 +67,15 @@ if [[ ! -f "data/filtered/code_en_sample.txt" ]]; then
     --text-column content --target-lang en --lang-threshold 0.5 \
     --min-chars 200 --max-chars 12000 --limit 1000 \
     --output-path data/filtered/code_en_sample.txt --force-exit
+fi
+
+if [[ ! -f "${TOKENIZER_MODEL}" ]]; then
+  echo "[Data] Training tokenizer (sample) -> ${TOKENIZER_DIR}"
+  uv run python scripts/data/train_tokenizer.py \
+    --manifest configs/data/refinedweb_mixture_filtered.yaml \
+    --vocab-size 32000 \
+    --output-dir "${TOKENIZER_DIR}" \
+    --log-file data/mixtures/refinedweb_mix_tokenizer_sample.json
 fi
 
 echo "[Data] Sharding filtered samples"

@@ -37,10 +37,26 @@ def shard_dataset(config: ShardConfig) -> dict:
     eos = config.eos_id if config.eos_id >= 0 else processor.eos_id()
     load_kwargs = {}
     if config.data_files is not None:
-        load_kwargs["data_files"] = config.data_files
-    ds = load_dataset(
-        config.dataset, config.subset, split=config.split, streaming=True, **load_kwargs
-    )
+        load_kwargs["data_files"] = {config.split: config.data_files}
+    try:
+        ds = load_dataset(
+            config.dataset, config.subset, split=config.split, streaming=True, **load_kwargs
+        )
+    except ValueError as err:
+        msg = str(err)
+        if "Bad split" not in msg:
+            raise
+        ds_dict = load_dataset(config.dataset, config.subset, streaming=True, **load_kwargs)
+        available = list(ds_dict.keys())
+        if not available:
+            raise
+        fallback = (
+            "train"
+            if "train" in available
+            else ("test" if "test" in available else available[0])
+        )
+        typer.echo(f"[Shard] Requested split '{config.split}' unavailable; using '{fallback}'")
+        ds = ds_dict[fallback]
 
     buffer: List[int] = []
     sequences: List[List[int]] = []

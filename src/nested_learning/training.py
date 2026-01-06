@@ -83,6 +83,10 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         return TitanOnlyModel(titan_cfg)
     titan_spec = LevelSpec(**model_cfg.titan_level)
     cms_specs = [LevelSpec(**entry) for entry in model_cfg.cms_levels]
+    self_mod_chunk_size_memory_raw = model_cfg.get("self_mod_chunk_size_memory")
+    self_mod_chunk_size_memory = (
+        None if self_mod_chunk_size_memory_raw is None else int(self_mod_chunk_size_memory_raw)
+    )
     hope_cfg = ModelConfig(
         vocab_size=model_cfg.vocab_size,
         dim=model_cfg.dim,
@@ -101,6 +105,16 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         self_mod_lr=float(model_cfg.get("self_mod_lr", 1e-3)),
         self_mod_hidden=int(model_cfg.get("self_mod_hidden", 4)),
         self_mod_chunk_size=int(model_cfg.get("self_mod_chunk_size", 1)),
+        self_mod_chunk_size_memory=self_mod_chunk_size_memory,
+        self_mod_objective=str(model_cfg.get("self_mod_objective", "l2")),
+        self_mod_stopgrad_vhat=bool(model_cfg.get("self_mod_stopgrad_vhat", True)),
+        self_mod_use_rank1_precond=bool(model_cfg.get("self_mod_use_rank1_precond", True)),
+        self_mod_use_alpha=bool(model_cfg.get("self_mod_use_alpha", True)),
+        self_mod_momentum=float(model_cfg.get("self_mod_momentum", 0.0)),
+        transformer_mlp_hidden_multiplier=int(
+            model_cfg.get("transformer_mlp_hidden_multiplier", 4)
+        ),
+        transformer_activation=str(model_cfg.get("transformer_activation", "gelu")),
         block_variant=str(model_cfg.get("block_variant", "hope_hybrid")),
     )
     return HOPEModel(hope_cfg)

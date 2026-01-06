@@ -175,7 +175,7 @@ Select the paper-defined variant via `model.block_variant` in Hydra configs:
 - `transformer` (baseline): `Attention → MLP` (no TITAN/CMS learning updates; useful for Phase 2 comparisons).
 
 Self-modifying Titans knobs (ablation-friendly, paper-aligned):
-- `model.self_mod_objective` (`l2` vs `dot`), `model.self_mod_use_rank1_precond` (DGD-like preconditioner), `model.self_mod_stopgrad_vhat`, `model.self_mod_momentum`.
+- `model.self_mod_objective` (`l2` vs `dot`), `model.self_mod_use_rank1_precond` (DGD-like preconditioner), `model.self_mod_use_alpha` (weight-decay/retention gate), `model.self_mod_stopgrad_vhat`, `model.self_mod_momentum`.
 
 ## Fast state (Nested Learning semantics)
 In-context updates can run against a per-context fast state so meta parameters never change:

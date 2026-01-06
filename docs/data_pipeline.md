@@ -13,6 +13,7 @@ The Stage 2 mixture mimics RefinedWeb + supplements. Download each source into
 | Source | License / Terms | Acquisition Command(s) | Notes |
 |--------|-----------------|------------------------|-------|
 | RefinedWeb / FineWeb proxy | CC BY 4.0 (FineWeb) | `uv run python scripts/data/shard_corpus.py --dataset HuggingFaceFW/fineweb --subset sample-10BT --split train --output data/raw/refinedweb.ndjsonl --limit 20000000` | Keep a copy of the HF dataset card; respect scraping policies. |
+| FineWeb-Edu | CC BY 4.0 (FineWeb) | Use `HuggingFaceFW/fineweb-edu` (e.g., `subset=sample-10BT`) via `scripts/data/filter_corpus.py` + `scripts/data/process_mixture.py`. | Paper-aligned option; prefer long-doc filtering if matching the paper’s setup. |
 | Wikipedia 2023-12 dump | CC BY-SA 3.0 | Download `https://huggingface.co/datasets/wikipedia/20220301.en` via HF CLI or mirror the XML dump. | Use HF `datasets load_dataset` inside the filtering script to avoid storing raw XML. |
 | C4 (en) | ODC-By | `uv run python scripts/data/shard_corpus.py --dataset allenai/c4 --subset en --split train --output data/raw/c4_en.ndjsonl --limit 8000000` | Heavy dataset; ensure disk quota before streaming. |
 | RedPajama CC subset | CC BY | Use `togethercomputer/RedPajama-Data-1T-Sample` or the CC subset tarballs. | Store gzipped JSONL files under `data/raw/redpajama/*.jsonl.gz`. |
@@ -111,6 +112,33 @@ uv run python scripts/data/filter_corpus.py \
 ```
 
 Adjust dataset/subset arguments per manifest entry. The script enforces language probabilities via `langdetect`, performs length screening, and deduplicates using a rolling hash window. Point `scripts/data/process_mixture.py` to these filtered files (or custom dataset definitions) for large-scale processing.
+
+## 4.1 FineWeb-Edu manifests (paper-aligned)
+
+This repo includes two manifest recipes for FineWeb-Edu:
+- `configs/data/fineweb_edu_mixture_sample.yaml` (subset `sample-10BT`, bounded `max_records`)
+- `configs/data/fineweb_edu_mixture_full.yaml` (subset `sample-100BT`, `seq_len=4096`)
+
+Tokenizer training:
+```bash
+uv run python scripts/data/train_tokenizer.py \
+  --manifest configs/data/fineweb_edu_mixture_sample.yaml \
+  --vocab-size 32000 \
+  --output-dir artifacts/tokenizer/fineweb_edu \
+  --log-file data/mixtures/fineweb_edu_tokenizer_samples.json
+```
+
+Sharding:
+```bash
+uv run python scripts/data/process_mixture.py \
+  configs/data/fineweb_edu_mixture_sample.yaml \
+  --tokenizer-path artifacts/tokenizer/fineweb_edu/spm_32000_unigram.model \
+  --log-file data/mixtures/fineweb_edu_sample_shards.json
+```
+
+If you want to more closely mimic “long document” regimes, filter first (higher `min_chars` / `max_chars`)
+and then switch the manifest entry to `dataset: text` + `data_files: <filtered_file>`. The tokenizer and
+sharding scripts accept `data_files` and will enforce the requested split.
 
 ## 5. Artifacts & stats
 - Tokenizer samples: `data/mixtures/refinedweb_mix_tokenizer.json`
