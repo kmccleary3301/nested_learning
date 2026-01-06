@@ -39,3 +39,12 @@ def test_deep_momentum_keeps_state_per_param_key() -> None:
     assert out_a2.shape == out_a1.shape
     assert torch.all(out_a2 > out_a1)
     assert set(optimizer.state.keys()) == {"a", "b"}
+
+
+def test_deep_momentum_nl_preconditioner_skips_mismatched_shapes() -> None:
+    optimizer = DeepMomentum(beta=0.0, beta2=0.0, variant="nl_l2_precond")
+    context = torch.randn(512)
+    grad_bias = torch.randn(2048)
+    out = optimizer(grad_bias, context=context)
+    assert torch.allclose(out, grad_bias)
+    assert optimizer.last_metrics["proj_skipped"] == 1.0

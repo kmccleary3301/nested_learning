@@ -149,11 +149,12 @@ class HOPEAttentionBlock(nn.Module):
             chunk_size = int(spec.update_period)
             if chunk_size <= 0:
                 continue
-            full_tokens = (seq_len // chunk_size) * chunk_size
             total_norm = 0.0
             update_events = 0
-            for start in range(0, full_tokens, chunk_size):
-                end = start + chunk_size
+            token_events = 0
+            for start in range(0, seq_len, chunk_size):
+                end = min(start + chunk_size, seq_len)
+                chunk_len = end - start
                 chunk_inputs = inputs[:, start:end, :].detach()
                 chunk_teach = teach[:, start:end, :]
                 chunk_active = active_mask[:, start:end]
@@ -166,13 +167,13 @@ class HOPEAttentionBlock(nn.Module):
                     delta_target = delta.expand_as(chunk_inputs)
                 else:
                     delta_target = chunk_teach
-                chunk_targets = (chunk_inputs + delta_target).detach()
                 base_params = fast_state.cms_params[level_name]
                 params_req = require_grad_params(base_params)
                 with torch.enable_grad():
                     prediction = call_with_params(
                         self.cms.blocks[level_name], params_req, chunk_inputs
                     )
+                    chunk_targets = (prediction.detach() - delta_target).detach()
                     diff_sq = (prediction - chunk_targets).pow(2)
                     mask_f = chunk_active.unsqueeze(-1).float()
                     loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
@@ -194,12 +195,13 @@ class HOPEAttentionBlock(nn.Module):
                 fast_state.cms_params[level_name] = updated
                 total_norm += magnitude
                 fast_state.level_manager.pop_last_metrics(level_name)
+                token_events += chunk_len
                 update_events += 1
             if update_events == 0:
                 continue
             stats_payload: Dict[str, float] = {
                 "grad_norm": total_norm,
-                "chunk_tokens": float(update_events * chunk_size),
+                "chunk_tokens": float(token_events),
                 "gate_hit": float(update_events),
             }
             if surprise_value is not None:
@@ -244,11 +246,12 @@ class HOPEAttentionBlock(nn.Module):
             chunk_size = int(spec.update_period)
             if chunk_size <= 0:
                 continue
-            full_tokens = (seq_len // chunk_size) * chunk_size
             total_norm = 0.0
             update_events = 0
-            for start in range(0, full_tokens, chunk_size):
-                end = start + chunk_size
+            token_events = 0
+            for start in range(0, seq_len, chunk_size):
+                end = min(start + chunk_size, seq_len)
+                chunk_len = end - start
                 chunk_inputs = inputs[:, start:end, :].detach()
                 chunk_teach = teach[:, start:end, :]
                 chunk_active = active_mask[:, start:end]
@@ -261,9 +264,9 @@ class HOPEAttentionBlock(nn.Module):
                     delta_target = delta.expand_as(chunk_inputs)
                 else:
                     delta_target = chunk_teach
-                chunk_targets = (chunk_inputs + delta_target).detach()
                 with torch.enable_grad():
                     prediction = self.cms.blocks[level_name](chunk_inputs)
+                    chunk_targets = (prediction.detach() - delta_target).detach()
                     diff_sq = (prediction - chunk_targets).pow(2)
                     mask_f = chunk_active.unsqueeze(-1).float()
                     loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
@@ -276,12 +279,13 @@ class HOPEAttentionBlock(nn.Module):
                     force=True,
                 )
                 self.level_manager.pop_last_metrics(level_name)
+                token_events += chunk_len
                 update_events += 1
             if update_events == 0:
                 continue
             stats_payload: Dict[str, float] = {
                 "grad_norm": total_norm,
-                "chunk_tokens": float(update_events * chunk_size),
+                "chunk_tokens": float(token_events),
                 "gate_hit": float(update_events),
             }
             if surprise_value is not None:
@@ -440,11 +444,12 @@ class HOPESelfModBlock(nn.Module):
             chunk_size = int(spec.update_period)
             if chunk_size <= 0:
                 continue
-            full_tokens = (seq_len // chunk_size) * chunk_size
             total_norm = 0.0
             update_events = 0
-            for start in range(0, full_tokens, chunk_size):
-                end = start + chunk_size
+            token_events = 0
+            for start in range(0, seq_len, chunk_size):
+                end = min(start + chunk_size, seq_len)
+                chunk_len = end - start
                 chunk_inputs = inputs[:, start:end, :].detach()
                 chunk_teach = teach[:, start:end, :]
                 chunk_active = active_mask[:, start:end]
@@ -457,9 +462,9 @@ class HOPESelfModBlock(nn.Module):
                     delta_target = delta.expand_as(chunk_inputs)
                 else:
                     delta_target = chunk_teach
-                chunk_targets = (chunk_inputs + delta_target).detach()
                 with torch.enable_grad():
                     prediction = self.cms.blocks[level_name](chunk_inputs)
+                    chunk_targets = (prediction.detach() - delta_target).detach()
                     diff_sq = (prediction - chunk_targets).pow(2)
                     mask_f = chunk_active.unsqueeze(-1).float()
                     loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
@@ -472,12 +477,13 @@ class HOPESelfModBlock(nn.Module):
                     force=True,
                 )
                 self.level_manager.pop_last_metrics(level_name)
+                token_events += chunk_len
                 update_events += 1
             if update_events == 0:
                 continue
             stats_payload: Dict[str, float] = {
                 "grad_norm": total_norm,
-                "chunk_tokens": float(update_events * chunk_size),
+                "chunk_tokens": float(token_events),
                 "gate_hit": float(update_events),
             }
             if surprise_value is not None:
@@ -505,11 +511,12 @@ class HOPESelfModBlock(nn.Module):
             chunk_size = int(spec.update_period)
             if chunk_size <= 0:
                 continue
-            full_tokens = (seq_len // chunk_size) * chunk_size
             total_norm = 0.0
             update_events = 0
-            for start in range(0, full_tokens, chunk_size):
-                end = start + chunk_size
+            token_events = 0
+            for start in range(0, seq_len, chunk_size):
+                end = min(start + chunk_size, seq_len)
+                chunk_len = end - start
                 chunk_inputs = inputs[:, start:end, :].detach()
                 chunk_teach = teach[:, start:end, :]
                 chunk_active = active_mask[:, start:end]
@@ -522,13 +529,13 @@ class HOPESelfModBlock(nn.Module):
                     delta_target = delta.expand_as(chunk_inputs)
                 else:
                     delta_target = chunk_teach
-                chunk_targets = (chunk_inputs + delta_target).detach()
                 base_params = fast_state.cms_params[level_name]
                 params_req = require_grad_params(base_params)
                 with torch.enable_grad():
                     prediction = call_with_params(
                         self.cms.blocks[level_name], params_req, chunk_inputs
                     )
+                    chunk_targets = (prediction.detach() - delta_target).detach()
                     diff_sq = (prediction - chunk_targets).pow(2)
                     mask_f = chunk_active.unsqueeze(-1).float()
                     loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
@@ -550,12 +557,13 @@ class HOPESelfModBlock(nn.Module):
                 fast_state.cms_params[level_name] = updated
                 total_norm += magnitude
                 fast_state.level_manager.pop_last_metrics(level_name)
+                token_events += chunk_len
                 update_events += 1
             if update_events == 0:
                 continue
             stats_payload: Dict[str, float] = {
                 "grad_norm": total_norm,
-                "chunk_tokens": float(update_events * chunk_size),
+                "chunk_tokens": float(token_events),
                 "gate_hit": float(update_events),
             }
             if surprise_value is not None:
@@ -678,7 +686,7 @@ class HOPEBlock(nn.Module):
 
         with torch.enable_grad():
             query = attn_out.detach()
-            target = (teach_signal.detach() + modifier).detach()
+            target = (modifier - teach_signal.detach()).detach()
             prediction = self.titan_memory(query)
             loss_terms = F.mse_loss(prediction, target, reduction="none")
             active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
@@ -726,7 +734,7 @@ class HOPEBlock(nn.Module):
         params_req = require_grad_params(base_params)
         with torch.enable_grad():
             query = attn_out.detach()
-            target = (teach_signal.detach() + modifier).detach()
+            target = (modifier - teach_signal.detach()).detach()
             prediction = call_with_params(self.titan_memory, params_req, query)
             loss_terms = F.mse_loss(prediction, target, reduction="none")
             active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
@@ -778,11 +786,12 @@ class HOPEBlock(nn.Module):
             chunk_size = int(spec.update_period)
             if chunk_size <= 0:
                 continue
-            full_tokens = (seq_len // chunk_size) * chunk_size
             total_norm = 0.0
             update_events = 0
-            for start in range(0, full_tokens, chunk_size):
-                end = start + chunk_size
+            token_events = 0
+            for start in range(0, seq_len, chunk_size):
+                end = min(start + chunk_size, seq_len)
+                chunk_len = end - start
                 chunk_inputs = inputs[:, start:end, :].detach()
                 chunk_teach = teach[:, start:end, :]
                 chunk_active = active_mask[:, start:end]
@@ -795,9 +804,9 @@ class HOPEBlock(nn.Module):
                     delta_target = delta.expand_as(chunk_inputs)
                 else:
                     delta_target = chunk_teach
-                chunk_targets = (chunk_inputs + delta_target).detach()
                 with torch.enable_grad():
                     prediction = self.cms.blocks[level_name](chunk_inputs)
+                    chunk_targets = (prediction.detach() - delta_target).detach()
                     diff_sq = (prediction - chunk_targets).pow(2)
                     mask_f = chunk_active.unsqueeze(-1).float()
                     loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
@@ -810,12 +819,13 @@ class HOPEBlock(nn.Module):
                     force=True,
                 )
                 self.level_manager.pop_last_metrics(level_name)
+                token_events += chunk_len
                 update_events += 1
             if update_events == 0:
                 continue
             stats_payload: Dict[str, float] = {
                 "grad_norm": total_norm,
-                "chunk_tokens": float(update_events * chunk_size),
+                "chunk_tokens": float(token_events),
                 "gate_hit": float(update_events),
             }
             if surprise_value is not None:
@@ -843,11 +853,12 @@ class HOPEBlock(nn.Module):
             chunk_size = int(spec.update_period)
             if chunk_size <= 0:
                 continue
-            full_tokens = (seq_len // chunk_size) * chunk_size
             total_norm = 0.0
             update_events = 0
-            for start in range(0, full_tokens, chunk_size):
-                end = start + chunk_size
+            token_events = 0
+            for start in range(0, seq_len, chunk_size):
+                end = min(start + chunk_size, seq_len)
+                chunk_len = end - start
                 chunk_inputs = inputs[:, start:end, :].detach()
                 chunk_teach = teach[:, start:end, :]
                 chunk_active = active_mask[:, start:end]
@@ -860,13 +871,13 @@ class HOPEBlock(nn.Module):
                     delta_target = delta.expand_as(chunk_inputs)
                 else:
                     delta_target = chunk_teach
-                chunk_targets = (chunk_inputs + delta_target).detach()
                 base_params = fast_state.cms_params[level_name]
                 params_req = require_grad_params(base_params)
                 with torch.enable_grad():
                     prediction = call_with_params(
                         self.cms.blocks[level_name], params_req, chunk_inputs
                     )
+                    chunk_targets = (prediction.detach() - delta_target).detach()
                     diff_sq = (prediction - chunk_targets).pow(2)
                     mask_f = chunk_active.unsqueeze(-1).float()
                     loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
@@ -888,12 +899,13 @@ class HOPEBlock(nn.Module):
                 fast_state.cms_params[level_name] = updated
                 total_norm += magnitude
                 fast_state.level_manager.pop_last_metrics(level_name)
+                token_events += chunk_len
                 update_events += 1
             if update_events == 0:
                 continue
             stats_payload: Dict[str, float] = {
                 "grad_norm": total_norm,
-                "chunk_tokens": float(update_events * chunk_size),
+                "chunk_tokens": float(token_events),
                 "gate_hit": float(update_events),
             }
             if surprise_value is not None:

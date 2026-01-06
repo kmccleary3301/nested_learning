@@ -32,10 +32,10 @@ def test_cms_updates_respect_update_period_tokens() -> None:
     teach = torch.randn_like(x)
     _ = block(x, teach_signal=teach)
     stats = block.pop_update_stats()
-    assert stats["cms.fast"]["gate_hit"] == 4.0
-    assert stats["cms.fast"]["chunk_tokens"] == 8.0
-    assert stats["cms.slow"]["gate_hit"] == 2.0
-    assert stats["cms.slow"]["chunk_tokens"] == 8.0
+    assert stats["cms.fast"]["gate_hit"] == 5.0
+    assert stats["cms.fast"]["chunk_tokens"] == 9.0
+    assert stats["cms.slow"]["gate_hit"] == 3.0
+    assert stats["cms.slow"]["chunk_tokens"] == 9.0
 
 
 def test_cms_updates_skip_when_no_signal() -> None:

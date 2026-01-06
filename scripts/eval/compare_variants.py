@@ -15,6 +15,7 @@ from tqdm import tqdm
 from nested_learning.memorize import (
     MemorizeConfig,
     memorize_sequence,
+    memorize_tokens,
     restore_state_dict,
     snapshot_state_dict,
 )
@@ -74,6 +75,39 @@ def _logprob_answer(
     return float(answer_logprob)
 
 
+def _memorize_prompt_answer_only(
+    model: torch.nn.Module,
+    tokenizer: SentencePieceTokenizer,
+    prompt: str,
+    answer: str,
+    device: torch.device,
+    memorize_cfg: MemorizeConfig,
+    *,
+    fast_state=None,
+) -> Dict[str, float]:
+    """
+    Memorize using gradients for the answer tokens only.
+
+    This avoids updating on long filler/haystack tokens when `use_correct_answer=True`,
+    which otherwise makes the comparison noisy for randomly-initialized checkpoints.
+    """
+    prompt_ids = tokenizer.encode(prompt, add_bos=True)
+    answer_ids = tokenizer.encode(" " + answer, add_bos=False)
+    inputs = torch.cat([prompt_ids, answer_ids], dim=0).to(device)
+    batch = inputs.unsqueeze(0)
+    teach_mask = torch.zeros((1, batch.size(1)), device=device)
+    start = max(0, prompt_ids.numel() - 1)
+    end = min(batch.size(1), start + answer_ids.numel())
+    teach_mask[:, start:end] = 1.0
+    return memorize_tokens(
+        model,
+        batch,
+        memorize_cfg,
+        fast_state=fast_state,
+        teach_mask=teach_mask,
+    )
+
+
 def _make_passkey_prompt(*, filler_sentences: int, key: str) -> str:
     sentences = [f"This is filler sentence number {idx}." for idx in range(filler_sentences)]
     random.shuffle(sentences)
@@ -100,6 +134,12 @@ def _run_passkey(
 
     correct_base = 0
     correct_mem = 0
+    true_lp_base_sum = 0.0
+    false_lp_base_sum = 0.0
+    margin_base_sum = 0.0
+    true_lp_mem_sum = 0.0
+    false_lp_mem_sum = 0.0
+    margin_mem_sum = 0.0
     path_stats: Dict[str, float] = {}
     for _ in tqdm(range(samples), desc="passkey"):
         key = f"PASSKEY-{random.randint(1000, 9999)}"
@@ -111,17 +151,35 @@ def _run_passkey(
             model, tokenizer, prompt, distractor, device, fast_state=fast_state
         )
         correct_base += int(lp_true > lp_false)
+        true_lp_base_sum += lp_true
+        false_lp_base_sum += lp_false
+        margin_base_sum += lp_true - lp_false
 
         if memorize_cfg.enabled:
-            memorize_text = prompt if not memorize_cfg.use_correct_answer else f"{prompt} {key}"
             if memorize_cfg.use_fast_state:
                 if fast_state is None or memorize_cfg.reset:
                     if not hasattr(model, "init_fast_state"):
                         raise RuntimeError("Model does not support fast state memorization")
                     fast_state = model.init_fast_state()
-                stats = memorize_sequence(
-                    model, tokenizer, memorize_text, device, memorize_cfg, fast_state=fast_state
-                )
+                if memorize_cfg.use_correct_answer:
+                    stats = _memorize_prompt_answer_only(
+                        model,
+                        tokenizer,
+                        prompt,
+                        key,
+                        device,
+                        memorize_cfg,
+                        fast_state=fast_state,
+                    )
+                else:
+                    stats = memorize_sequence(
+                        model,
+                        tokenizer,
+                        prompt,
+                        device,
+                        memorize_cfg,
+                        fast_state=fast_state,
+                    )
                 for k, v in stats.items():
                     path_stats[k] = path_stats.get(k, 0.0) + v
                 lp_true_mem = _logprob_answer(
@@ -131,26 +189,46 @@ def _run_passkey(
                     model, tokenizer, prompt, distractor, device, fast_state=fast_state
                 )
                 correct_mem += int(lp_true_mem > lp_false_mem)
+                true_lp_mem_sum += lp_true_mem
+                false_lp_mem_sum += lp_false_mem
+                margin_mem_sum += lp_true_mem - lp_false_mem
             else:
+                memorize_text = prompt if not memorize_cfg.use_correct_answer else f"{prompt} {key}"
                 stats = memorize_sequence(model, tokenizer, memorize_text, device, memorize_cfg)
                 for k, v in stats.items():
                     path_stats[k] = path_stats.get(k, 0.0) + v
                 lp_true_mem = _logprob_answer(model, tokenizer, prompt, key, device)
                 lp_false_mem = _logprob_answer(model, tokenizer, prompt, distractor, device)
                 correct_mem += int(lp_true_mem > lp_false_mem)
+                true_lp_mem_sum += lp_true_mem
+                false_lp_mem_sum += lp_false_mem
+                margin_mem_sum += lp_true_mem - lp_false_mem
                 if memorize_cfg.reset and base_state is not None:
                     restore_state_dict(model, base_state)
         else:
             correct_mem += int(lp_true > lp_false)
+            true_lp_mem_sum += lp_true
+            false_lp_mem_sum += lp_false
+            margin_mem_sum += lp_true - lp_false
 
-    base_acc = correct_base / samples if samples else 0.0
-    mem_acc = correct_mem / samples if samples else 0.0
+    denom = float(samples) if samples else 1.0
+    base_acc = correct_base / denom
+    mem_acc = correct_mem / denom
     payload: Dict[str, Any] = {
         "samples": samples,
         "filler_sentences": filler_sentences,
         "accuracy_base": base_acc,
         "accuracy_memorize": mem_acc,
         "accuracy_delta": mem_acc - base_acc,
+        "mean_logprob_true_base": true_lp_base_sum / denom,
+        "mean_logprob_true_memorize": true_lp_mem_sum / denom,
+        "mean_logprob_true_delta": (true_lp_mem_sum - true_lp_base_sum) / denom,
+        "mean_logprob_false_base": false_lp_base_sum / denom,
+        "mean_logprob_false_memorize": false_lp_mem_sum / denom,
+        "mean_logprob_false_delta": (false_lp_mem_sum - false_lp_base_sum) / denom,
+        "mean_margin_base": margin_base_sum / denom,
+        "mean_margin_memorize": margin_mem_sum / denom,
+        "mean_margin_delta": (margin_mem_sum - margin_base_sum) / denom,
     }
     if memorize_cfg.enabled:
         payload["memorize_paths"] = (
@@ -194,6 +272,12 @@ def _run_niah(
     for length in context_lengths:
         correct_base = 0
         correct_mem = 0
+        true_lp_base_sum = 0.0
+        false_lp_base_sum = 0.0
+        margin_base_sum = 0.0
+        true_lp_mem_sum = 0.0
+        false_lp_mem_sum = 0.0
+        margin_mem_sum = 0.0
         for _ in tqdm(range(samples_per_length), desc=f"niah@{length}"):
             needle = f"KEY-{random.randint(1000, 9999)}"
             prompt = _make_niah_prompt(needle=needle, filler_tokens=max(1, length // 128))
@@ -206,24 +290,35 @@ def _run_niah(
                 model, tokenizer, prompt, distractor, device, fast_state=fast_state
             )
             correct_base += int(lp_true_base > lp_false_base)
+            true_lp_base_sum += lp_true_base
+            false_lp_base_sum += lp_false_base
+            margin_base_sum += lp_true_base - lp_false_base
 
             if memorize_cfg.enabled:
-                memorize_text = (
-                    prompt if not memorize_cfg.use_correct_answer else f"{prompt} {needle}"
-                )
                 if memorize_cfg.use_fast_state:
                     if fast_state is None or memorize_cfg.reset:
                         if not hasattr(model, "init_fast_state"):
                             raise RuntimeError("Model does not support fast state memorization")
                         fast_state = model.init_fast_state()
-                    stats = memorize_sequence(
-                        model,
-                        tokenizer,
-                        memorize_text,
-                        device,
-                        memorize_cfg,
-                        fast_state=fast_state,
-                    )
+                    if memorize_cfg.use_correct_answer:
+                        stats = _memorize_prompt_answer_only(
+                            model,
+                            tokenizer,
+                            prompt,
+                            needle,
+                            device,
+                            memorize_cfg,
+                            fast_state=fast_state,
+                        )
+                    else:
+                        stats = memorize_sequence(
+                            model,
+                            tokenizer,
+                            prompt,
+                            device,
+                            memorize_cfg,
+                            fast_state=fast_state,
+                        )
                     for k, v in stats.items():
                         path_stats[k] = path_stats.get(k, 0.0) + v
                     lp_true_mem = _logprob_answer(
@@ -233,23 +328,44 @@ def _run_niah(
                         model, tokenizer, prompt, distractor, device, fast_state=fast_state
                     )
                     correct_mem += int(lp_true_mem > lp_false_mem)
+                    true_lp_mem_sum += lp_true_mem
+                    false_lp_mem_sum += lp_false_mem
+                    margin_mem_sum += lp_true_mem - lp_false_mem
                 else:
+                    memorize_text = (
+                        prompt if not memorize_cfg.use_correct_answer else f"{prompt} {needle}"
+                    )
                     stats = memorize_sequence(model, tokenizer, memorize_text, device, memorize_cfg)
                     for k, v in stats.items():
                         path_stats[k] = path_stats.get(k, 0.0) + v
                     lp_true_mem = _logprob_answer(model, tokenizer, prompt, needle, device)
                     lp_false_mem = _logprob_answer(model, tokenizer, prompt, distractor, device)
                     correct_mem += int(lp_true_mem > lp_false_mem)
+                    true_lp_mem_sum += lp_true_mem
+                    false_lp_mem_sum += lp_false_mem
+                    margin_mem_sum += lp_true_mem - lp_false_mem
                     if memorize_cfg.reset and base_state is not None:
                         restore_state_dict(model, base_state)
             else:
                 correct_mem += int(lp_true_base > lp_false_base)
+                true_lp_mem_sum += lp_true_base
+                false_lp_mem_sum += lp_false_base
+                margin_mem_sum += lp_true_base - lp_false_base
 
         base_acc = correct_base / samples_per_length if samples_per_length else 0.0
         mem_acc = correct_mem / samples_per_length if samples_per_length else 0.0
         results[f"niah_{length}_baseline_accuracy"] = base_acc
         results[f"niah_{length}_memorize_accuracy"] = mem_acc
         results[f"niah_{length}_memorize_delta"] = mem_acc - base_acc
+        denom = float(samples_per_length) if samples_per_length else 1.0
+        results[f"niah_{length}_mean_logprob_true_base"] = true_lp_base_sum / denom
+        results[f"niah_{length}_mean_logprob_true_memorize"] = true_lp_mem_sum / denom
+        results[f"niah_{length}_mean_logprob_true_delta"] = (
+            true_lp_mem_sum - true_lp_base_sum
+        ) / denom
+        results[f"niah_{length}_mean_margin_base"] = margin_base_sum / denom
+        results[f"niah_{length}_mean_margin_memorize"] = margin_mem_sum / denom
+        results[f"niah_{length}_mean_margin_delta"] = (margin_mem_sum - margin_base_sum) / denom
 
     if memorize_cfg.enabled:
         results["memorize_paths"] = (
@@ -289,6 +405,13 @@ def main(
     memorize_surprise_threshold: float = typer.Option(
         None, help="Minimum teach-signal norm required to trigger memorization."
     ),
+    memorize_layers: str = typer.Option(
+        "all",
+        help=(
+            "Comma-separated layer indices to update during memorization "
+            "(e.g., '11' or '0,11'), or 'last', or 'all'."
+        ),
+    ),
     memorize_paths: str = typer.Option(
         "all",
         help=(
@@ -311,6 +434,20 @@ def main(
         allowed_paths = None
     else:
         allowed_paths = tuple(path.strip() for path in memorize_paths.split(",") if path.strip())
+
+    layers_raw = memorize_layers.strip().lower()
+    if layers_raw == "all":
+        allowed_layers = None
+    elif layers_raw == "last":
+        allowed_layers = (-1,)
+    else:
+        parsed: list[int] = []
+        for part in memorize_layers.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            parsed.append(int(part))
+        allowed_layers = tuple(parsed) if parsed else None
     memorize_cfg = MemorizeConfig(
         enabled=memorize,
         steps=max(1, memorize_steps),
@@ -318,6 +455,7 @@ def main(
         use_correct_answer=memorize_use_correct_answer,
         surprise_threshold=memorize_surprise_threshold,
         paths=allowed_paths,
+        layers=allowed_layers,
     )
 
     spec_a = ModelSpec(name="A", config=a_config, checkpoint=a_checkpoint)

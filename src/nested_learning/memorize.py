@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict
 
 import torch
+import torch.nn as nn
 
 from .tokenizer import SentencePieceTokenizer
 from .training import compute_teach_signal
@@ -18,6 +19,7 @@ class MemorizeConfig:
     use_fast_state: bool = True
     surprise_threshold: float | None = None
     paths: tuple[str, ...] | None = None
+    layers: tuple[int, ...] | None = None
     online_chunk_size: int | None = None  # If set, use online chunked updates
 
 
@@ -33,6 +35,7 @@ def _setup_memorization_context(model, cfg: MemorizeConfig):
     """Helper to setup model state for memorization."""
     prev_allowed = getattr(model, "get_allowed_update_levels", lambda: None)()
     prev_threshold = getattr(model, "get_surprise_threshold", lambda: None)()
+    prev_layers = getattr(model, "get_allowed_update_layers", lambda: None)()
 
     if hasattr(model, "set_allowed_update_levels"):
         allowed = None
@@ -43,10 +46,16 @@ def _setup_memorization_context(model, cfg: MemorizeConfig):
     if cfg.surprise_threshold is not None and hasattr(model, "set_surprise_threshold"):
         getattr(model, "set_surprise_threshold")(cfg.surprise_threshold)
 
-    return prev_allowed, prev_threshold
+    if hasattr(model, "set_allowed_update_layers"):
+        layers = None
+        if cfg.layers is not None:
+            layers = {int(idx) for idx in cfg.layers}
+        getattr(model, "set_allowed_update_layers")(layers)
+
+    return prev_allowed, prev_threshold, prev_layers
 
 
-def _teardown_memorization_context(model, prev_allowed, prev_threshold):
+def _teardown_memorization_context(model, prev_allowed, prev_threshold, prev_layers):
     """Helper to restore model state after memorization."""
     if hasattr(model, "set_allowed_update_levels"):
         getattr(model, "set_allowed_update_levels")(
@@ -54,6 +63,10 @@ def _teardown_memorization_context(model, prev_allowed, prev_threshold):
         )
     if hasattr(model, "set_surprise_threshold"):
         getattr(model, "set_surprise_threshold")(prev_threshold)
+    if hasattr(model, "set_allowed_update_layers"):
+        getattr(model, "set_allowed_update_layers")(
+            None if prev_layers is None else {int(idx) for idx in prev_layers}
+        )
 
 
 def _collect_metrics(model, stats: dict[str, float]):
@@ -66,16 +79,49 @@ def _collect_metrics(model, stats: dict[str, float]):
         titan_hits = sum(
             value for key, value in metrics.items() if key.endswith("titan.titan.gate_hit")
         )
-        cms_fast_updates = sum(
-            value for key, value in metrics.items() if "cms.cms_fast.grad_norm" in key
-        )
-        cms_fast_hits = sum(
-            value for key, value in metrics.items() if key.endswith("cms.cms_fast.gate_hit")
-        )
-        stats["cms_fast_updates"] += cms_fast_updates
         stats["titan_mem_updates"] += titan_updates
         stats["titan_update_events"] += titan_hits
-        stats["cms_fast_update_events"] += cms_fast_hits
+
+        # Aggregate CMS updates per level: keys look like "layer{idx}.cms.<level>.<metric>".
+        for key, value in metrics.items():
+            parts = key.split(".")
+            if len(parts) < 4:
+                continue
+            if parts[-3] != "cms":
+                continue
+            level = parts[-2]
+            metric = parts[-1]
+            if metric == "grad_norm":
+                stats_key = f"{level}_updates"
+                stats[stats_key] = stats.get(stats_key, 0.0) + float(value)
+            elif metric == "gate_hit":
+                stats_key = f"{level}_update_events"
+                stats[stats_key] = stats.get(stats_key, 0.0) + float(value)
+
+
+def _layernorm_backward(
+    grad_out: torch.Tensor,
+    pre_norm: torch.Tensor,
+    norm: nn.LayerNorm,
+) -> torch.Tensor:
+    """
+    Convert gradient w.r.t. LayerNorm output into gradient w.r.t. LayerNorm input.
+
+    This aligns the teach signal with the pre-norm hidden state that the blocks actually update.
+    """
+    if grad_out.shape != pre_norm.shape:
+        raise ValueError("grad_out and pre_norm must have identical shapes")
+    weight = norm.weight
+    if weight is None:
+        weight = torch.ones(pre_norm.shape[-1], device=pre_norm.device, dtype=pre_norm.dtype)
+    grad_hat = grad_out * weight.to(grad_out.dtype).view(1, 1, -1)
+    mean = pre_norm.mean(dim=-1, keepdim=True)
+    var = pre_norm.var(dim=-1, unbiased=False, keepdim=True)
+    inv_std = torch.rsqrt(var + norm.eps)
+    x_hat = (pre_norm - mean) * inv_std
+    grad_mean = grad_hat.mean(dim=-1, keepdim=True)
+    grad_proj = (grad_hat * x_hat).mean(dim=-1, keepdim=True)
+    return (grad_hat - grad_mean - x_hat * grad_proj) * inv_std
 
 
 def memorize_tokens(
@@ -84,6 +130,7 @@ def memorize_tokens(
     cfg: MemorizeConfig,
     *,
     fast_state=None,
+    teach_mask: torch.Tensor | None = None,
 ) -> dict[str, float]:
     if token_batch.size(1) < 2:
         return {}
@@ -94,11 +141,17 @@ def memorize_tokens(
     with torch.no_grad():
         stats: dict[str, float] = {
             "titan_mem_updates": 0.0,
-            "cms_fast_updates": 0.0,
             "titan_update_events": 0.0,
+            "cms_fast_updates": 0.0,
             "cms_fast_update_events": 0.0,
+            "cms_mid_updates": 0.0,
+            "cms_mid_update_events": 0.0,
+            "cms_slow_updates": 0.0,
+            "cms_slow_update_events": 0.0,
+            "cms_ultra_updates": 0.0,
+            "cms_ultra_update_events": 0.0,
         }
-        prev_allowed, prev_threshold = _setup_memorization_context(model, cfg)
+        prev_allowed, prev_threshold, prev_layers = _setup_memorization_context(model, cfg)
 
         if cfg.online_chunk_size and cfg.online_chunk_size > 0:
             # Online / Chunked Learning Mode
@@ -136,12 +189,25 @@ def memorize_tokens(
 
                 context_tokens = token_batch[:, :target_end]
 
-                logits = (
-                    model(context_tokens, fast_state=fast_state)
-                    if cfg.use_fast_state
-                    else model(context_tokens)
-                )
+                pre_norm = None
+                if hasattr(model, "forward_with_pre_norm"):
+                    forward_fn = getattr(model, "forward_with_pre_norm")
+                    logits, pre_norm = (
+                        forward_fn(context_tokens, fast_state=fast_state)
+                        if cfg.use_fast_state
+                        else forward_fn(context_tokens)
+                    )
+                else:
+                    logits = (
+                        model(context_tokens, fast_state=fast_state)
+                        if cfg.use_fast_state
+                        else model(context_tokens)
+                    )
                 full_signal = compute_teach_signal(model, logits, context_tokens)
+                if pre_norm is not None:
+                    norm = getattr(model, "norm", None)
+                    if isinstance(norm, nn.LayerNorm):
+                        full_signal = _layernorm_backward(full_signal, pre_norm, norm)
 
                 # full_signal length is target_end.
                 # indices correspond to errors for targets at 1 ... target_end.
@@ -166,6 +232,13 @@ def memorize_tokens(
                 mask[:, mask_start:mask_end, :] = 1.0
 
                 masked_signal = full_signal * mask
+                if teach_mask is not None:
+                    if teach_mask.ndim != 2:
+                        raise ValueError("teach_mask must have shape (B, T)")
+                    if teach_mask.shape[0] != token_batch.shape[0]:
+                        raise ValueError("teach_mask batch size mismatch")
+                    mask_slice = teach_mask[:, :target_end].to(masked_signal.device).float()
+                    masked_signal = masked_signal * mask_slice.unsqueeze(-1)
                 if cfg.use_fast_state:
                     model(context_tokens, teach_signal=masked_signal, fast_state=fast_state)
                 else:
@@ -177,12 +250,32 @@ def memorize_tokens(
         else:
             # Batch Mode (Default)
             for _ in range(cfg.steps):
-                logits = (
-                    model(token_batch, fast_state=fast_state)
-                    if cfg.use_fast_state
-                    else model(token_batch)
-                )
+                pre_norm = None
+                if hasattr(model, "forward_with_pre_norm"):
+                    forward_fn = getattr(model, "forward_with_pre_norm")
+                    logits, pre_norm = (
+                        forward_fn(token_batch, fast_state=fast_state)
+                        if cfg.use_fast_state
+                        else forward_fn(token_batch)
+                    )
+                else:
+                    logits = (
+                        model(token_batch, fast_state=fast_state)
+                        if cfg.use_fast_state
+                        else model(token_batch)
+                    )
                 teach_signal = compute_teach_signal(model, logits, token_batch)
+                if pre_norm is not None:
+                    norm = getattr(model, "norm", None)
+                    if isinstance(norm, nn.LayerNorm):
+                        teach_signal = _layernorm_backward(teach_signal, pre_norm, norm)
+                if teach_mask is not None:
+                    if teach_mask.ndim != 2:
+                        raise ValueError("teach_mask must have shape (B, T)")
+                    if teach_mask.shape[:2] != teach_signal.shape[:2]:
+                        raise ValueError("teach_mask shape mismatch")
+                    mask_f = teach_mask.to(teach_signal.device).float().unsqueeze(-1)
+                    teach_signal = teach_signal * mask_f
                 surprise = float(torch.norm(teach_signal))
                 if cfg.surprise_threshold is not None and surprise < cfg.surprise_threshold:
                     continue
@@ -192,7 +285,7 @@ def memorize_tokens(
                     model(token_batch, teach_signal=teach_signal)
                 _collect_metrics(model, stats)
 
-        _teardown_memorization_context(model, prev_allowed, prev_threshold)
+        _teardown_memorization_context(model, prev_allowed, prev_threshold, prev_layers)
         return stats
 
 
@@ -204,6 +297,7 @@ def memorize_sequence(
     cfg: MemorizeConfig,
     *,
     fast_state=None,
+    teach_mask: torch.Tensor | None = None,
 ) -> dict[str, float]:
     if not text:
         return {}
@@ -211,4 +305,4 @@ def memorize_sequence(
     if tokens.size(0) < 2:
         return {}
     batch = tokens.to(device).unsqueeze(0)
-    return memorize_tokens(model, batch, cfg, fast_state=fast_state)
+    return memorize_tokens(model, batch, cfg, fast_state=fast_state, teach_mask=teach_mask)

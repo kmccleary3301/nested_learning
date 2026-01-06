@@ -133,13 +133,15 @@ def main(
                 count = _write_samples(spec, handle)
                 stats.append({"name": spec.name, "dataset": spec.dataset, "samples": count})
     typer.echo(f"[Tokenizer] Training SentencePiece -> {model_prefix}")
+    total_samples = sum(s["samples"] for s in stats)
     spm.SentencePieceTrainer.train(
         input=str(tmp_path),
         model_prefix=str(model_prefix),
         vocab_size=vocab_size,
         model_type=model_type,
         character_coverage=character_coverage,
-        input_sentence_size=sum(s["samples"] for s in stats),
+        # SentencePiece requires input_sentence_size <= 0 or > 100.
+        input_sentence_size=(total_samples if total_samples > 100 else 0),
         shuffle_input_sentence=True,
         train_extremely_large_corpus=True,
     )

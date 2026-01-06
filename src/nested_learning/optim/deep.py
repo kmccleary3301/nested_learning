@@ -48,7 +48,11 @@ class DeepMomentum(nn.Module):
         grad: torch.Tensor,
         context: torch.Tensor | None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        metrics: dict[str, float] = {"ctx_norm": 0.0, "proj_norm": 0.0}
+        metrics: dict[str, float] = {
+            "ctx_norm": 0.0,
+            "proj_norm": 0.0,
+            "proj_skipped": 0.0,
+        }
         if context is None:
             return grad, metrics
         ctx = context
@@ -58,6 +62,9 @@ class DeepMomentum(nn.Module):
         metrics["ctx_norm"] = ctx_norm.item()
 
         if ctx_norm > 0:
+            if grad.ndim == 0 or grad.shape[-1] != ctx.shape[-1]:
+                metrics["proj_skipped"] = 1.0
+                return grad, metrics
             unit = ctx / (ctx_norm + self.eps)
             # Project grad orthogonal to context (rank-1 projector).
             projection = (grad * unit).sum(dim=-1, keepdim=True) * unit

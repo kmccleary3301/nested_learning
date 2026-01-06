@@ -63,6 +63,7 @@ class HOPEModel(nn.Module):
         self.gradient_checkpointing = config.gradient_checkpointing
         self._surprise_threshold = config.surprise_threshold
         self._allowed_update_levels: set[str] | None = None
+        self._allowed_update_layers: set[int] | None = None
         variant = str(config.block_variant).strip().lower()
         if variant == "hope_attention":
             block_config = HOPEAttentionBlockConfig(
@@ -157,12 +158,57 @@ class HOPEModel(nn.Module):
     def get_allowed_update_levels(self) -> set[str] | None:
         return None if self._allowed_update_levels is None else self._allowed_update_levels.copy()
 
+    def set_allowed_update_layers(self, layers: set[int] | None) -> None:
+        if layers is None:
+            self._allowed_update_layers = None
+            return
+        normalized: set[int] = set()
+        total = len(self.blocks)
+        for idx in layers:
+            layer_idx = int(idx)
+            if layer_idx < 0:
+                layer_idx = total + layer_idx
+            if not (0 <= layer_idx < total):
+                raise ValueError(f"Invalid layer index {idx} for model with {total} layers")
+            normalized.add(layer_idx)
+        self._allowed_update_layers = normalized
+
+    def get_allowed_update_layers(self) -> set[int] | None:
+        return None if self._allowed_update_layers is None else self._allowed_update_layers.copy()
+
     def forward(
         self,
         tokens: torch.Tensor,
         *,
         teach_signal: torch.Tensor | None = None,
         fast_state: ModelFastState | None = None,
+    ) -> torch.Tensor:
+        logits, _pre_norm = self.forward_with_pre_norm(
+            tokens, teach_signal=teach_signal, fast_state=fast_state
+        )
+        return logits
+
+    def forward_with_pre_norm(
+        self,
+        tokens: torch.Tensor,
+        *,
+        teach_signal: torch.Tensor | None = None,
+        fast_state: ModelFastState | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        x = self._run_blocks(tokens, teach_signal=teach_signal, fast_state=fast_state)
+        pre_norm = x
+        x = self.norm(x)
+        logits = self.lm_head(x)
+        if teach_signal is not None:
+            self._latest_update_metrics = self._gather_block_stats()
+        return logits, pre_norm
+
+    def _run_blocks(
+        self,
+        tokens: torch.Tensor,
+        *,
+        teach_signal: torch.Tensor | None,
+        fast_state: ModelFastState | None,
     ) -> torch.Tensor:
         x = self.embed(tokens)
         surprise_value: float | None = None
@@ -179,6 +225,11 @@ class HOPEModel(nn.Module):
                     norm = scaled_signal.norm(dim=-1, keepdim=True)
                     scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
                     scaled_signal = scaled_signal / scale
+                if (
+                    self._allowed_update_layers is not None
+                    and idx not in self._allowed_update_layers
+                ):
+                    scaled_signal = None
 
             def block_call(
                 hidden: torch.Tensor,
@@ -198,11 +249,7 @@ class HOPEModel(nn.Module):
                 x = checkpoint(block_call, x, use_reentrant=False)
             else:
                 x = block_call(x)
-        x = self.norm(x)
-        logits = self.lm_head(x)
-        if teach_signal is not None:
-            self._latest_update_metrics = self._gather_block_stats()
-        return logits
+        return x
 
     def _gather_block_stats(self) -> Dict[str, float]:
         metrics: Dict[str, float] = {}

@@ -133,6 +133,31 @@ def test_memorize_online_chunking_updates_once_per_target() -> None:
     assert stats["titan_update_events"] == float(tokens.size(1) - 1)
 
 
+def test_teach_mask_restricts_memorization_updates() -> None:
+    torch.manual_seed(0)
+    model = _tiny_model_update_every_call()
+    tokens = torch.randint(0, model.config.vocab_size, (1, 8))
+    cfg = MemorizeConfig(enabled=True, steps=1, use_fast_state=True, paths=("cms_fast",))
+
+    fast_state_masked = model.init_fast_state()
+    zero_mask = torch.zeros((tokens.size(0), tokens.size(1)))
+    stats_masked = memorize_tokens(
+        model, tokens, cfg, fast_state=fast_state_masked, teach_mask=zero_mask
+    )
+    assert stats_masked["cms_fast_update_events"] == 0.0
+
+    fast_state_full = model.init_fast_state()
+    one_mask = torch.ones((tokens.size(0), tokens.size(1)))
+    stats_full = memorize_tokens(
+        model,
+        tokens,
+        cfg,
+        fast_state=fast_state_full,
+        teach_mask=one_mask,
+    )
+    assert stats_full["cms_fast_update_events"] > 0.0
+
+
 def test_self_mod_lr_scales_fast_state_update_magnitude() -> None:
     torch.manual_seed(0)
     model_hi = _tiny_model_with_self_mod_lr(1e-3)

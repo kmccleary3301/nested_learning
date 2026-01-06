@@ -140,6 +140,49 @@ If you want to more closely mimic “long document” regimes, filter first (hig
 and then switch the manifest entry to `dataset: text` + `data_files: <filtered_file>`. The tokenizer and
 sharding scripts accept `data_files` and will enforce the requested split.
 
+### 4.1.1 FineWeb-Edu long-doc filtered sample (turnkey)
+
+For a concrete, paper-aligned “long document” recipe, use:
+- `configs/data/fineweb_edu_longdoc_filtered_sample.yaml`
+
+Step 1 — create a filtered long-doc file (example settings; tune `min_chars`/`max_chars` to match your needs):
+
+```bash
+uv run python scripts/data/filter_corpus.py \
+  --dataset HuggingFaceFW/fineweb-edu \
+  --subset sample-10BT \
+  --split train \
+  --text-column text \
+  --target-lang en \
+  --lang-threshold 0.85 \
+  --min-chars 2000 \
+  --max-chars 20000 \
+  --limit 5000 \
+  --output-path data/filtered/fineweb_edu_longdoc_en_sample.txt \
+  --force-exit
+```
+
+Step 2 — train a tokenizer on that filtered file:
+
+```bash
+uv run python scripts/data/train_tokenizer.py \
+  --manifest configs/data/fineweb_edu_longdoc_filtered_sample.yaml \
+  --vocab-size 32000 \
+  --output-dir artifacts/tokenizer/fineweb_edu_longdoc \
+  --log-file data/mixtures/fineweb_edu_longdoc_tokenizer_samples.json
+```
+
+Step 3 — shard into tokenized `.npy` shards:
+
+```bash
+uv run python scripts/data/process_mixture.py \
+  configs/data/fineweb_edu_longdoc_filtered_sample.yaml \
+  --tokenizer-path artifacts/tokenizer/fineweb_edu_longdoc/spm_32000_unigram.model \
+  --log-file data/mixtures/fineweb_edu_longdoc_sample_shards.json
+```
+
+All outputs (`data/filtered/`, `data/shards/`, `artifacts/tokenizer/`) are gitignored.
+
 ## 5. Artifacts & stats
 - Tokenizer samples: `data/mixtures/refinedweb_mix_tokenizer.json`
 - Shard stats (pilot stream): `data/mixtures/refinedweb_mix_shards.json`

@@ -1,0 +1,131 @@
+{
+  "seed": 0,
+  "device": "cuda:1",
+  "tokenizer_path": "artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model",
+  "a": {
+    "config": "configs/resolved/phase2_pilot_attention_eval.yaml",
+    "checkpoint": "artifacts/checkpoints/phase2_init/hope_attention_step000000.pt",
+    "passkey": {
+      "samples": 8,
+      "filler_sentences": 20,
+      "accuracy_base": 0.5,
+      "accuracy_memorize": 0.5,
+      "accuracy_delta": 0.0,
+      "mean_logprob_true_base": -1294.908706665039,
+      "mean_logprob_true_memorize": -1294.8721160888672,
+      "mean_logprob_true_delta": 0.036590576171875,
+      "mean_logprob_false_base": -1297.3745727539062,
+      "mean_logprob_false_memorize": -1297.3665771484375,
+      "mean_logprob_false_delta": 0.00799560546875,
+      "mean_margin_base": 2.4658660888671875,
+      "mean_margin_memorize": 2.4944610595703125,
+      "mean_margin_delta": 0.028594970703125,
+      "memorize_paths": "cms_fast",
+      "memorize_use_correct_answer": true,
+      "memorize_stats": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 36.15032583102584,
+        "cms_fast_update_events": 48.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      }
+    },
+    "niah": {
+      "niah_256_baseline_accuracy": 0.625,
+      "niah_256_memorize_accuracy": 0.625,
+      "niah_256_memorize_delta": 0.0,
+      "niah_256_mean_logprob_true_base": -991.9136581420898,
+      "niah_256_mean_logprob_true_memorize": -991.8013305664062,
+      "niah_256_mean_logprob_true_delta": 0.11232757568359375,
+      "niah_256_mean_margin_base": 62.82862854003906,
+      "niah_256_mean_margin_memorize": 62.92052459716797,
+      "niah_256_mean_margin_delta": 0.09189605712890625,
+      "memorize_paths": "cms_fast",
+      "memorize_use_correct_answer": true,
+      "memorize_stats": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 97.94030156359076,
+        "cms_fast_update_events": 37.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      }
+    }
+  },
+  "b": {
+    "config": "configs/resolved/phase2_pilot_transformer_eval.yaml",
+    "checkpoint": "artifacts/checkpoints/phase2_init/transformer_step000000.pt",
+    "passkey": {
+      "samples": 8,
+      "filler_sentences": 20,
+      "accuracy_base": 0.625,
+      "accuracy_memorize": 0.625,
+      "accuracy_delta": 0.0,
+      "mean_logprob_true_base": -2081.151657104492,
+      "mean_logprob_true_memorize": -2081.151657104492,
+      "mean_logprob_true_delta": 0.0,
+      "mean_logprob_false_base": -2115.255126953125,
+      "mean_logprob_false_memorize": -2115.255126953125,
+      "mean_logprob_false_delta": 0.0,
+      "mean_margin_base": 34.10346984863281,
+      "mean_margin_memorize": 34.10346984863281,
+      "mean_margin_delta": 0.0,
+      "memorize_paths": "cms_fast",
+      "memorize_use_correct_answer": true,
+      "memorize_stats": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      }
+    },
+    "niah": {
+      "niah_256_baseline_accuracy": 0.625,
+      "niah_256_memorize_accuracy": 0.625,
+      "niah_256_memorize_delta": 0.0,
+      "niah_256_mean_logprob_true_base": -1839.57421875,
+      "niah_256_mean_logprob_true_memorize": -1839.57421875,
+      "niah_256_mean_logprob_true_delta": 0.0,
+      "niah_256_mean_margin_base": 104.52041625976562,
+      "niah_256_mean_margin_memorize": 104.52041625976562,
+      "niah_256_mean_margin_delta": 0.0,
+      "memorize_paths": "cms_fast",
+      "memorize_use_correct_answer": true,
+      "memorize_stats": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      }
+    }
+  },
+  "memorize": {
+    "enabled": true,
+    "steps": 1,
+    "reset": true,
+    "use_correct_answer": true,
+    "paths": "cms_fast",
+    "surprise_threshold": null
+  }
+}
