@@ -6,6 +6,7 @@ from typing import Callable
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.func import grad, vmap
 
 
 @dataclass(frozen=True)
@@ -262,19 +263,28 @@ class SelfModifyingTitans(nn.Module):
         boundary: dict[str, ResidualMLPMemoryState] = {
             name: getattr(state, name).clone() for name in memories
         }
+        grads = {name: self._memory_grads_chunk(boundary[name], k_seq, v_seq) for name in memories}
 
         for t in range(steps):
             k_t = k_seq[:, t, :]
-            v_t = v_seq[:, t, :]
             eta_t = eta_seq[:, t]
             alpha_t = alpha_seq[:, t]
             kk = torch.einsum("bi,bj->bij", k_t, k_t)
             precond = alpha_t[:, None, None] * eye - eta_t[:, None, None] * kk
             for name in memories:
                 fast = getattr(state, name)
-                frozen = boundary[name]
-                grads = self._memory_grads(frozen, k_t, v_t)
-                self._apply_param_update(fast, grads, eta_t, alpha_t, precond)
+                g1, g2, gskip = grads[name]
+                self._apply_param_update(
+                    fast,
+                    (
+                        g1[:, t, ...],
+                        g2[:, t, ...],
+                        None if gskip is None else gskip[:, t, ...],
+                    ),
+                    eta_t,
+                    alpha_t,
+                    precond,
+                )
 
     def _memory_grads(
         self,
@@ -312,6 +322,81 @@ class SelfModifyingTitans(nn.Module):
             return g1, g2, None
         g1, g2, gskip = grads
         return g1, g2, gskip
+
+    def _memory_grads_chunk(
+        self,
+        frozen: ResidualMLPMemoryState,
+        k_seq: torch.Tensor,
+        v_seq: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """
+        Compute per-token gradients for an entire chunk in parallel (paper §8.2).
+
+        Returns gradients with leading shape (B, T, ...).
+        """
+        w1 = frozen.w1.detach()
+        w2 = frozen.w2.detach()
+        w_skip = None if frozen.w_skip is None else frozen.w_skip.detach()
+
+        k_tokens = k_seq.transpose(0, 1)
+        v_tokens = v_seq.transpose(0, 1)
+
+        if w_skip is None:
+
+            def loss_fn(
+                w1_t: torch.Tensor,
+                w2_t: torch.Tensor,
+                k_t: torch.Tensor,
+                v_t: torch.Tensor,
+            ) -> torch.Tensor:
+                mem = ResidualMLPMemoryState(w1=w1_t, w2=w2_t)
+                pred = self._memory_forward(k_t, mem)
+                vhat = self._memory_forward(v_t, mem)
+                if self.config.stopgrad_vhat:
+                    vhat = vhat.detach()
+                if self.config.objective == "dot":
+                    loss = -(pred * vhat).sum(dim=-1)
+                else:
+                    loss = (pred - vhat).pow(2).sum(dim=-1)
+                return loss.sum()
+
+            grad_fn = grad(loss_fn, argnums=(0, 1))
+            g1_tokens, g2_tokens = vmap(grad_fn, in_dims=(None, None, 0, 0))(
+                w1,
+                w2,
+                k_tokens,
+                v_tokens,
+            )
+            return g1_tokens.transpose(0, 1), g2_tokens.transpose(0, 1), None
+
+        def loss_fn(
+            w1_t: torch.Tensor,
+            w2_t: torch.Tensor,
+            w_skip_t: torch.Tensor,
+            k_t: torch.Tensor,
+            v_t: torch.Tensor,
+        ) -> torch.Tensor:
+            mem = ResidualMLPMemoryState(w1=w1_t, w2=w2_t, w_skip=w_skip_t)
+            pred = self._memory_forward(k_t, mem)
+            vhat = self._memory_forward(v_t, mem)
+            if self.config.stopgrad_vhat:
+                vhat = vhat.detach()
+            if self.config.objective == "dot":
+                loss = -(pred * vhat).sum(dim=-1)
+            else:
+                loss = (pred - vhat).pow(2).sum(dim=-1)
+            return loss.sum()
+
+        grad_fn = grad(loss_fn, argnums=(0, 1, 2))
+        g1_tokens, g2_tokens, gskip_tokens = vmap(
+            grad_fn,
+            in_dims=(None, None, None, 0, 0),
+        )(w1, w2, w_skip, k_tokens, v_tokens)
+        return (
+            g1_tokens.transpose(0, 1),
+            g2_tokens.transpose(0, 1),
+            gskip_tokens.transpose(0, 1),
+        )
 
     def _apply_param_update(
         self,
