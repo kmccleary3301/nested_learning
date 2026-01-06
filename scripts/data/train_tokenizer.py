@@ -59,15 +59,23 @@ def _write_samples(spec: DatasetSpec, handle) -> int:
 
 @app.command()
 def main(
-    dataset: str = typer.Option("roneneldan/TinyStories", help="HF dataset name (ignored if manifest set)."),
+    dataset: str = typer.Option(
+        "roneneldan/TinyStories", help="HF dataset name (ignored if manifest set)."
+    ),
     split: str = typer.Option("train", help="Dataset split (ignored if manifest set)."),
     text_column: str = typer.Option("text", help="Text column (ignored if manifest set)."),
-    sample_limit: int = typer.Option(100_000, help="Sample limit per dataset (ignored if manifest set)."),
+    sample_limit: int = typer.Option(
+        100_000, help="Sample limit per dataset (ignored if manifest set)."
+    ),
     vocab_size: int = typer.Option(32_000, help="SentencePiece vocabulary size."),
     model_type: str = typer.Option("unigram", help="SentencePiece model type."),
     character_coverage: float = typer.Option(0.9995, help="Character coverage target."),
-    output_dir: Path = typer.Option(Path("artifacts/tokenizer"), help="Directory for tokenizer artifacts."),
-    manifest: Optional[Path] = typer.Option(None, help="YAML manifest describing multiple datasets."),
+    output_dir: Path = typer.Option(
+        Path("artifacts/tokenizer"), help="Directory for tokenizer artifacts."
+    ),
+    manifest: Optional[Path] = typer.Option(
+        None, help="YAML manifest describing multiple datasets."
+    ),
     log_file: Optional[Path] = typer.Option(
         Path("data/mixtures/tokenizer_samples.json"), help="Where to log dataset sample stats."
     ),
@@ -93,7 +101,9 @@ def main(
         typer.echo(f"[Tokenizer] Writing samples to {tmp_path}")
         with tmp_path.open("w", encoding="utf-8") as handle:
             for spec in specs:
-                typer.echo(f"[Tokenizer] Streaming {spec.name} ({spec.dataset}) limit={spec.sample_limit}")
+                typer.echo(
+                    f"[Tokenizer] Streaming {spec.name} ({spec.dataset}) limit={spec.sample_limit}"
+                )
                 count = _write_samples(spec, handle)
                 stats.append({"name": spec.name, "dataset": spec.dataset, "samples": count})
     typer.echo(f"[Tokenizer] Training SentencePiece -> {model_prefix}")

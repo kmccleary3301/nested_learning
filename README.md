@@ -167,6 +167,21 @@ uv run python scripts/eval/zeroshot.py \
 
 Memorization metrics (baseline vs adaptive) are emitted alongside task accuracy for easy comparisons.
 
+## Architecture variants
+Select the paper-defined variant via `model.block_variant` in Hydra configs:
+- `hope_attention` (paper HOPE-Attention): `Attention → CMS` (paper-defined).
+- `hope_selfmod` (paper HOPE scaffold): `Self-modifying Titans (Eqs. 83–93; Eq. 91 residual MLP memories) → CMS` with chunked updates via `model.self_mod_chunk_size` (others) and `model.self_mod_chunk_size_memory` (M_memory).
+- `hope_hybrid` (legacy): `Attention + TitanMemory + CMS` (exploratory; not paper-defined).
+- `transformer` (baseline): `Attention → MLP` (no TITAN/CMS learning updates; useful for Phase 2 comparisons).
+
+Self-modifying Titans knobs (ablation-friendly, paper-aligned):
+- `model.self_mod_objective` (`l2` vs `dot`), `model.self_mod_use_rank1_precond` (DGD-like preconditioner), `model.self_mod_stopgrad_vhat`, `model.self_mod_momentum`.
+
+## Fast state (Nested Learning semantics)
+In-context updates can run against a per-context fast state so meta parameters never change:
+- `HOPEModel.init_fast_state()` / `TitanOnlyModel.init_fast_state()` returns a `ModelFastState`.
+- `MemorizeConfig.use_fast_state=true` (default) requires passing `fast_state` into `memorize_tokens()` / `memorize_sequence()`; evaluation scripts handle this automatically.
+
 ## Releases
 Before tagging or announcing a new checkpoint, work through `docs/release_checklist.md` so the bundle includes manifest validation reports, tokenizer coverage JSON, zero-shot/NIAH/continual/passkey/PG-19 eval outputs, forgetting plots, and filled checkpoint reports.
 

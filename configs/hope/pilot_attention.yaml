@@ -1,0 +1,9 @@
+defaults:
+  - /pilot
+  - _self_
+
+model:
+  block_variant: hope_attention
+  qk_l2_norm: true
+  local_conv_window: 4
+

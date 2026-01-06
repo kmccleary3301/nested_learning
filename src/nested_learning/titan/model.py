@@ -7,10 +7,12 @@ import torch
 import torch.nn as nn
 
 from ..backbones import AttentionConfig, SelfAttention
+from ..fast_state import BlockFastState, ModelFastState, build_block_fast_state
+from ..functional import call_with_params, grads_to_dict, require_grad_params
+from ..hope.self_mod import SelfModifier
 from ..levels import LevelSpec
 from ..optim.manager import LevelConfig, LevelOptimizerManager
 from ..titan.memory import TitanMemory, TitanMemoryConfig
-from ..hope.self_mod import SelfModifier
 
 
 @dataclass
@@ -24,6 +26,8 @@ class TitanOnlyModelConfig:
     teach_scale: float = 1.0
     teach_clip: float = 0.0
     teach_schedule: Dict[str, float] | None = None
+    qk_l2_norm: bool = False
+    local_conv_window: int | None = None
     titan_hidden_multiplier: int = 4
     activation: str = "gelu"
     self_mod_hidden: int = 4
@@ -38,7 +42,14 @@ class TitanOnlyBlock(nn.Module):
         self.config = config
         self.surprise_threshold: float | None = None
         self.enabled: bool = True
-        self.attn = SelfAttention(AttentionConfig(dim=config.dim, heads=config.heads))
+        self.attn = SelfAttention(
+            AttentionConfig(
+                dim=config.dim,
+                heads=config.heads,
+                qk_l2_norm=config.qk_l2_norm,
+                local_conv_window=config.local_conv_window,
+            )
+        )
         titan_config = TitanMemoryConfig(
             dim=config.dim,
             hidden_multiplier=config.titan_hidden_multiplier,
@@ -60,13 +71,27 @@ class TitanOnlyBlock(nn.Module):
         x: torch.Tensor,
         *,
         teach_signal: torch.Tensor | None = None,
+        fast_state: BlockFastState | None = None,
     ) -> torch.Tensor:
         attn_out = self.attn(x)
-        mem_out = self.titan_memory(attn_out)
+        if fast_state is None:
+            mem_out = self.titan_memory(attn_out)
+        else:
+            if fast_state.titan_params is None:
+                raise ValueError(
+                    "fast_state.titan_params is required for TitanOnlyBlock fast-state forward"
+                )
+            mem_out = call_with_params(self.titan_memory, fast_state.titan_params, attn_out)
         combined = attn_out + mem_out
         if teach_signal is not None:
-            self._update_titan(attn_out, mem_out, teach_signal)
-        self.level_manager.tick()
+            if fast_state is None:
+                self._update_titan(attn_out, mem_out, teach_signal)
+            else:
+                self._update_titan_fast(fast_state, attn_out, mem_out, teach_signal)
+        if fast_state is None:
+            self.level_manager.tick()
+        else:
+            fast_state.level_manager.tick()
         return self.norm(combined)
 
     def set_surprise_threshold(self, threshold: float | None) -> None:
@@ -99,23 +124,74 @@ class TitanOnlyBlock(nn.Module):
         )
         context_vec = attn_out.detach().mean(dim=(0, 1))
         with torch.enable_grad():
-            query = attn_out.detach().requires_grad_(True)
+            query = attn_out.detach()
             target = (teach_signal.detach() + modifier).detach()
             prediction = self.titan_memory(query)
-            
-            # Granular Masking (Critique P1)
-            loss = nn.functional.mse_loss(prediction, target, reduction='none')
+            loss_terms = nn.functional.mse_loss(prediction, target, reduction="none")
+            active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
+            mask = active.float()
             if self.surprise_threshold is not None:
-                with torch.no_grad():
-                     norms = teach_signal.norm(dim=-1, keepdim=True)
-                     mask = (norms >= self.surprise_threshold).float()
-                loss = (loss * mask).sum() / mask.sum().clamp(min=1.0)
-            else:
-                loss = loss.mean()
-            
+                norms = teach_signal.norm(dim=-1, keepdim=True)
+                mask = mask * (norms >= self.surprise_threshold).float()
+            loss = (loss_terms * mask).sum() / mask.sum().clamp(min=1.0)
+
         self.level_manager.optimize(level_name, self.titan_memory, loss, context=context_vec)
         # Pop metrics to avoid stale entries even if we do not log them yet.
         self.level_manager.pop_last_metrics(level_name)
+
+    def _update_titan_fast(
+        self,
+        fast_state: BlockFastState,
+        attn_out: torch.Tensor,
+        mem_out: torch.Tensor,
+        teach_signal: torch.Tensor,
+    ) -> None:
+        level_name = self.config.titan_level.name
+        if not self.enabled:
+            return
+        if not fast_state.level_manager.should_update(level_name):
+            return
+        if self.surprise_threshold is not None:
+            surprise_value = float(teach_signal.norm())
+            if surprise_value < self.surprise_threshold:
+                return
+        if fast_state.titan_params is None:
+            return
+        modifier = self.self_modifier(
+            key=attn_out.detach(),
+            value=mem_out.detach(),
+            error_signal=teach_signal.detach(),
+        )
+        context_vec = attn_out.detach().mean(dim=(0, 1))
+        base_params = fast_state.titan_params
+        params_req = require_grad_params(base_params)
+        with torch.enable_grad():
+            query = attn_out.detach()
+            target = (teach_signal.detach() + modifier).detach()
+            prediction = call_with_params(self.titan_memory, params_req, query)
+            loss_terms = nn.functional.mse_loss(prediction, target, reduction="none")
+            active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
+            mask = active.float()
+            if self.surprise_threshold is not None:
+                norms = teach_signal.norm(dim=-1, keepdim=True)
+                mask = mask * (norms >= self.surprise_threshold).float()
+            loss = (loss_terms * mask).sum() / mask.sum().clamp(min=1.0)
+        grads = torch.autograd.grad(
+            loss,
+            tuple(params_req.values()),
+            retain_graph=False,
+            allow_unused=True,
+        )
+        grads_dict = grads_to_dict(params_req, grads)
+        updated, _magnitude = fast_state.level_manager.apply_grads(
+            level_name,
+            base_params,
+            grads_dict,
+            context=context_vec,
+            force=False,
+        )
+        fast_state.titan_params = updated
+        fast_state.level_manager.pop_last_metrics(level_name)
 
 
 class TitanOnlyModel(nn.Module):
@@ -167,9 +243,12 @@ class TitanOnlyModel(nn.Module):
         tokens: torch.Tensor,
         *,
         teach_signal: torch.Tensor | None = None,
+        fast_state: ModelFastState | None = None,
     ) -> torch.Tensor:
         x = self.embed(tokens)
-        for block in self.blocks:
+        if fast_state is not None and len(fast_state.blocks) != len(self.blocks):
+            raise ValueError("fast_state.blocks length does not match model.blocks")
+        for idx, block in enumerate(self.blocks):
             scaled_signal = None
             if teach_signal is not None:
                 scaled_signal = teach_signal * self._runtime_teach_scale
@@ -178,7 +257,8 @@ class TitanOnlyModel(nn.Module):
                         norm = scaled_signal.norm(dim=-1, keepdim=True)
                         scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
                     scaled_signal = scaled_signal / scale
-            x = block(x, teach_signal=scaled_signal)  # type: ignore[arg-type]
+            block_state = None if fast_state is None else fast_state.blocks[idx]
+            x = block(x, teach_signal=scaled_signal, fast_state=block_state)  # type: ignore[arg-type]
         x = self.norm(x)
         return self.lm_head(x)
 
@@ -196,3 +276,17 @@ class TitanOnlyModel(nn.Module):
             if hasattr(block, "attn"):
                 for p in block.attn.parameters():
                     p.requires_grad = False
+
+    def init_fast_state(self) -> ModelFastState:
+        states = []
+        for block in self.blocks:
+            specs = [block.config.titan_level]
+            state = build_block_fast_state(
+                titan_module=block.titan_memory,
+                cms_blocks={},
+                specs=specs,
+                optimizer_configs=block.config.optimizers or {},
+                default_lr=block.config.self_mod_lr,
+            )
+            states.append(state)
+        return ModelFastState(blocks=states)

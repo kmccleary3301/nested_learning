@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Iterable, List, MutableMapping, Sequence
 
 
@@ -36,14 +36,10 @@ class LevelClock:
     """Deterministic scheduler for Nested Learning level updates."""
 
     def __init__(self, specs: Sequence[LevelSpec]):
-        if not specs:
-            raise ValueError("LevelClock requires at least one LevelSpec")
         self._specs: Dict[str, LevelSpec] = {spec.name: spec for spec in specs}
         if len(self._specs) != len(specs):
             raise ValueError("Duplicate level names provided to LevelClock")
-        self._state: MutableMapping[str, LevelState] = {
-            name: LevelState() for name in self._specs
-        }
+        self._state: MutableMapping[str, LevelState] = {name: LevelState() for name in self._specs}
         self._step: int = 0
         self._timeline: List[dict] = []
 
@@ -75,7 +71,9 @@ class LevelClock:
         return sorted(self._specs.values(), key=lambda spec: spec.update_period)
 
     def stats(self) -> Dict[str, LevelState]:
-        return {name: LevelState(state.last_step, state.updates) for name, state in self._state.items()}
+        return {
+            name: LevelState(state.last_step, state.updates) for name, state in self._state.items()
+        }
 
     def timeline(self) -> List[dict]:
         return list(self._timeline)

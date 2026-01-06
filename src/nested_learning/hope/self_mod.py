@@ -7,7 +7,7 @@ import torch.nn as nn
 class SelfModifier(nn.Module):
     """
     Learns parameter updates conditioned on key/value/error signals.
-    
+
     Note: In this implementation, we predict a 'target modification' (delta to the error signal)
     rather than directly predicting weight deltas (Delta W). Mathematically, modifying the
     target y to (y + delta) in the inner optimization step:

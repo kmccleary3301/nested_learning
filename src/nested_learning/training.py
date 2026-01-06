@@ -59,6 +59,9 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
     teach_schedule = {}
     if "teach_schedule" in model_cfg:
         teach_schedule = OmegaConf.to_container(model_cfg.teach_schedule, resolve=True)  # type: ignore[arg-type]
+    qk_l2_norm = bool(model_cfg.get("qk_l2_norm", False))
+    local_conv_window_raw = model_cfg.get("local_conv_window")
+    local_conv_window = None if local_conv_window_raw is None else int(local_conv_window_raw)
     if model_type == "titan":
         titan_spec = LevelSpec(**model_cfg.titan_level)
         titan_cfg = TitanOnlyModelConfig(
@@ -71,7 +74,11 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
             teach_scale=teach_scale,
             teach_clip=teach_clip,
             teach_schedule=teach_schedule,
+            qk_l2_norm=qk_l2_norm,
+            local_conv_window=local_conv_window,
             freeze_backbone=model_cfg.get("freeze_backbone", False),
+            self_mod_lr=float(model_cfg.get("self_mod_lr", 1e-3)),
+            self_mod_hidden=int(model_cfg.get("self_mod_hidden", 4)),
         )
         return TitanOnlyModel(titan_cfg)
     titan_spec = LevelSpec(**model_cfg.titan_level)
@@ -89,6 +96,12 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         teach_schedule=teach_schedule,
         gradient_checkpointing=model_cfg.get("gradient_checkpointing", False),
         freeze_backbone=model_cfg.get("freeze_backbone", False),
+        qk_l2_norm=qk_l2_norm,
+        local_conv_window=local_conv_window,
+        self_mod_lr=float(model_cfg.get("self_mod_lr", 1e-3)),
+        self_mod_hidden=int(model_cfg.get("self_mod_hidden", 4)),
+        self_mod_chunk_size=int(model_cfg.get("self_mod_chunk_size", 1)),
+        block_variant=str(model_cfg.get("block_variant", "hope_hybrid")),
     )
     return HOPEModel(hope_cfg)
 
@@ -170,7 +183,9 @@ def _build_dataset(data_cfg: DictConfig):
     raise ValueError(msg)
 
 
-def compute_teach_signal(model: torch.nn.Module, logits: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
+def compute_teach_signal(
+    model: torch.nn.Module, logits: torch.Tensor, tokens: torch.Tensor
+) -> torch.Tensor:
     """
     Approximate dL/dh where h is the hidden state before the LM head.
     Aligns with CE(logits[:, :-1], tokens[:, 1:]) used in training.
@@ -308,7 +323,11 @@ def run_training_loop(
         tokens = batch.to(device)
         _apply_teach_schedule(base_model, cfg, step)
         with autocast_factory():
-            logits = model(tokens) if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model(tokens)
+            logits = (
+                model(tokens)
+                if not isinstance(model, torch.nn.parallel.DistributedDataParallel)
+                else model(tokens)
+            )
             loss = torch.nn.functional.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
             )
@@ -325,7 +344,11 @@ def run_training_loop(
                 update_metrics = base_model.pop_update_metrics()
         if step % log_interval == 0:
             ppl = torch.exp(loss.detach()).item()
-            metrics_payload = {"loss": loss.item(), "ppl": ppl, "teach_signal_norm": teach_signal_norm}
+            metrics_payload = {
+                "loss": loss.item(),
+                "ppl": ppl,
+                "teach_signal_norm": teach_signal_norm,
+            }
             metrics_payload.update(update_metrics)
             logger.log(metrics_payload, step=step)
             if (not distributed) or (dist_ctx and dist_ctx.rank == 0):
@@ -358,7 +381,12 @@ def _apply_teach_schedule(model: HOPEModel, cfg: DictConfig, step: int) -> None:
             scale *= min(1.0, (step + 1) / warmup)
         decay_start = schedule.get("decay_start")
         decay_duration = schedule.get("decay_duration")
-        if decay_start is not None and decay_duration and decay_duration > 0 and (step + 1) > decay_start:
+        if (
+            decay_start is not None
+            and decay_duration
+            and decay_duration > 0
+            and (step + 1) > decay_start
+        ):
             progress = min(1.0, (step + 1 - decay_start) / decay_duration)
             scale *= max(0.0, 1.0 - progress)
     model.set_teach_runtime(scale=scale)
@@ -403,7 +431,9 @@ def _resolve_autocast_dtype(name: str) -> torch.dtype:
     raise ValueError(msg)
 
 
-def _build_optimizer(model: torch.nn.Module, cfg: DictConfig, *, device: torch.device) -> torch.optim.Optimizer:
+def _build_optimizer(
+    model: torch.nn.Module, cfg: DictConfig, *, device: torch.device
+) -> torch.optim.Optimizer:
     optimizer_cfg = getattr(cfg, "optim", {})
     optim_type = str(optimizer_cfg.get("type", "adamw")).lower()
     if optim_type == "muon":
@@ -423,7 +453,9 @@ def _build_optimizer(model: torch.nn.Module, cfg: DictConfig, *, device: torch.d
     return torch.optim.AdamW(model.parameters(), **kwargs)
 
 
-def _build_muon_optimizer(model: torch.nn.Module, optimizer_cfg: DictConfig, *, device: torch.device):
+def _build_muon_optimizer(
+    model: torch.nn.Module, optimizer_cfg: DictConfig, *, device: torch.device
+):
     if not hasattr(torch.optim, "Muon"):
         raise RuntimeError("torch.optim.Muon is not available in this PyTorch build")
     lr = optimizer_cfg.get("lr", 1e-3)
@@ -458,7 +490,11 @@ def _build_muon_optimizer(model: torch.nn.Module, optimizer_cfg: DictConfig, *, 
     if ns_steps is not None:
         muon_kwargs["ns_steps"] = int(ns_steps)
     muon_opt = torch.optim.Muon(muon_params, **muon_kwargs) if muon_params else None  # type: ignore[attr-defined]
-    adamw_kwargs = {"lr": lr, "betas": optimizer_cfg.get("betas", (0.9, 0.999)), "weight_decay": weight_decay}
+    adamw_kwargs = {
+        "lr": lr,
+        "betas": optimizer_cfg.get("betas", (0.9, 0.999)),
+        "weight_decay": weight_decay,
+    }
     if fused:
         adamw_kwargs["fused"] = True
     adamw_opt = torch.optim.AdamW(adamw_params, **adamw_kwargs) if adamw_params else None
@@ -596,7 +632,9 @@ def verify_checkpoint_integrity(ckpt_path: Path) -> Dict[str, object]:
     computed_sha = _checksum_path(str(ckpt_path))
     recorded_sha = metadata.get("checkpoint_sha256")
     if recorded_sha and computed_sha and recorded_sha != computed_sha:
-        raise ValueError(f"Checkpoint SHA mismatch: recorded {recorded_sha} vs computed {computed_sha}")
+        raise ValueError(
+            f"Checkpoint SHA mismatch: recorded {recorded_sha} vs computed {computed_sha}"
+        )
     sha_file = ckpt_path.with_suffix(".sha256")
     if sha_file.exists() and computed_sha:
         recorded_line = sha_file.read_text().strip().split()
@@ -610,7 +648,9 @@ def verify_checkpoint_integrity(ckpt_path: Path) -> Dict[str, object]:
     config_hash = sha256(config_path.read_text().encode("utf-8")).hexdigest()
     recorded_cfg_hash = metadata.get("config_sha256")
     if recorded_cfg_hash and recorded_cfg_hash != config_hash:
-        raise ValueError(f"Config SHA mismatch: recorded {recorded_cfg_hash} vs computed {config_hash}")
+        raise ValueError(
+            f"Config SHA mismatch: recorded {recorded_cfg_hash} vs computed {config_hash}"
+        )
     if "rng_states" not in metadata:
         raise ValueError("Metadata missing rng_states")
     return metadata
@@ -623,7 +663,9 @@ def _capture_rng_states() -> Dict[str, object]:
         "torch": _tensor_state_to_hex(torch.random.get_rng_state()),
     }
     if torch.cuda.is_available():
-        payload["torch_cuda"] = [_tensor_state_to_hex(state) for state in torch.cuda.get_rng_state_all()]  # type: ignore[attr-defined]
+        payload["torch_cuda"] = [
+            _tensor_state_to_hex(state) for state in torch.cuda.get_rng_state_all()
+        ]  # type: ignore[attr-defined]
     return payload
 
 

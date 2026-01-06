@@ -12,10 +12,10 @@ from omegaconf import DictConfig
 from nested_learning.logging_utils import NullLogger, init_logger
 from nested_learning.training import (
     DistributedContext,
+    _seed_everything,
     build_dataloader,
     build_model_from_cfg,
     compute_teach_signal,
-    _seed_everything,
     unwrap_config,
 )
 
@@ -66,7 +66,9 @@ def main(cfg: DictConfig) -> None:
         dist_ctx=dist_ctx,
         seed=loader_seed,
     )
-    logger = init_logger(getattr(cfg, "logging", None), cfg) if engine.global_rank == 0 else NullLogger()
+    logger = (
+        init_logger(getattr(cfg, "logging", None), cfg) if engine.global_rank == 0 else NullLogger()
+    )
     steps = cfg.train.steps
     log_interval = cfg.train.get("log_interval", 10)
     checkpoint_cfg = cfg.train.get("checkpoint", {})

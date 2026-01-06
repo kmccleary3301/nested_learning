@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Sequence
 
 import torch
 import torch.nn as nn
@@ -57,7 +57,6 @@ class CMS(nn.Module):
         super().__init__()
         ordered = ensure_level_specs(levels)
         self.level_specs: Sequence[LevelSpec] = tuple(ordered)
-        self._spec_map: Dict[str, LevelSpec] = {spec.name: spec for spec in ordered}
         self.blocks = nn.ModuleDict(
             {
                 spec.name: CMSBlock(
@@ -69,13 +68,6 @@ class CMS(nn.Module):
                 for spec in self.level_specs
             }
         )
-        self._chunk_buffers: Dict[str, list[dict[str, torch.Tensor]]] = {
-            spec.name: [] for spec in self.level_specs
-        }
-        self._pending_chunks: Dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None] = {
-            spec.name: None for spec in self.level_specs
-        }
-        self.last_update_stats: Dict[str, Dict[str, float]] = {}
 
     def forward(
         self,
@@ -94,82 +86,3 @@ class CMS(nn.Module):
         if return_intermediates:
             return current, inputs, outputs
         return current
-
-    def accumulate_chunks(
-        self,
-        *,
-        inputs: Dict[str, torch.Tensor],
-        outputs: Dict[str, torch.Tensor],
-        error_signals: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
-        ready: Dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
-        for spec in self.level_specs:
-            name = spec.name
-            if self._pending_chunks[name] is not None:
-                ready[name] = self._pending_chunks[name]  # type: ignore[assignment]
-                continue
-            block_input = inputs[name]
-            block_output = outputs[name]
-            delta_target = (
-                error_signals[name]
-                if error_signals and name in error_signals
-                else block_output - block_input
-            )
-            self._chunk_buffers[name].append(
-                {
-                    "input": block_input.detach(),
-                    "target": (block_input + delta_target).detach(),
-                }
-            )
-            chunk_size = spec.update_period
-            if len(self._chunk_buffers[name]) < chunk_size:
-                continue
-            entries = self._chunk_buffers[name][:chunk_size]
-            chunk_inputs, inputs_mask = self._pad_and_cat([entry["input"] for entry in entries])
-            chunk_targets, _ = self._pad_and_cat([entry["target"] for entry in entries])
-            self._pending_chunks[name] = (chunk_inputs, chunk_targets, inputs_mask)
-            ready[name] = self._pending_chunks[name]  # type: ignore[assignment]
-        return ready
-
-    def consume_chunk(self, name: str) -> None:
-        spec = self._spec_map[name]
-        pending = self._pending_chunks.get(name)
-        if pending is None:
-            raise RuntimeError(f"No pending chunk to consume for level {name}")
-        entries = self._chunk_buffers[name]
-        chunk_size = spec.update_period
-        if len(entries) < chunk_size:
-            raise RuntimeError(f"Insufficient buffered entries to consume for level {name}")
-        del entries[:chunk_size]
-        self._pending_chunks[name] = None
-
-    @staticmethod
-    def _pad_and_cat(tensors: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        if not tensors:
-            raise ValueError("No tensors to stack")
-        seq_lens = {tensor.shape[1] for tensor in tensors}
-        if len(seq_lens) == 1:
-            stacked = torch.cat(tensors, dim=0)
-            mask = torch.ones((stacked.shape[0], stacked.shape[1]), device=stacked.device, dtype=torch.bool)
-            return stacked, mask
-        max_len = max(seq_lens)
-        padded = []
-        masks = []
-        for tensor in tensors:
-            curr_len = tensor.shape[1]
-            if curr_len == max_len:
-                padded.append(tensor)
-                masks.append(torch.ones((tensor.shape[0], curr_len), device=tensor.device, dtype=torch.bool))
-                continue
-            pad_len = max_len - curr_len
-            pad_shape = (tensor.shape[0], pad_len, tensor.shape[2])
-            pad = torch.zeros(
-                pad_shape,
-                device=tensor.device,
-                dtype=tensor.dtype,
-            )
-            padded.append(torch.cat([tensor, pad], dim=1))
-            ones = torch.ones((tensor.shape[0], curr_len), device=tensor.device, dtype=torch.bool)
-            zeros = torch.zeros((tensor.shape[0], pad_len), device=tensor.device, dtype=torch.bool)
-            masks.append(torch.cat([ones, zeros], dim=1))
-        return torch.cat(padded, dim=0), torch.cat(masks, dim=0)

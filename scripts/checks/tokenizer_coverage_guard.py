@@ -9,7 +9,6 @@ import typer
 
 from nested_learning.tokenizer_coverage import compute_tokenizer_coverage_stats
 
-
 app = typer.Typer(
     add_completion=False,
     help="Regress coverage stats against a recorded baseline to catch tokenizer drift.",
@@ -45,7 +44,9 @@ def main(
     if not baseline.exists():
         raise typer.BadParameter(f"Baseline JSON {baseline} was not found.")
     baseline_stats = json.loads(baseline.read_text())
-    current_stats = compute_tokenizer_coverage_stats(tokenizer_path, sample_file, max_lines=max_lines)
+    current_stats = compute_tokenizer_coverage_stats(
+        tokenizer_path, sample_file, max_lines=max_lines
+    )
     violations: list[str] = []
 
     delta_avg = current_stats["avg_tokens_per_word"] - baseline_stats["avg_tokens_per_word"]
@@ -54,16 +55,23 @@ def main(
             f"avg_tokens_per_word regressed by {delta_avg:.4f} (limit {avg_tokens_tolerance:.4f})."
         )
 
-    delta_single = baseline_stats["pct_single_token_words"] - current_stats["pct_single_token_words"]
+    delta_single = (
+        baseline_stats["pct_single_token_words"] - current_stats["pct_single_token_words"]
+    )
     if delta_single > single_token_drop_tolerance:
         violations.append(
-            f"pct_single_token_words dropped by {delta_single:.4f} (limit {single_token_drop_tolerance:.4f})."
+            f"pct_single_token_words dropped by {delta_single:.4f} "
+            f"(limit {single_token_drop_tolerance:.4f})."
         )
 
-    delta_two = baseline_stats["pct_two_or_less_tokens_words"] - current_stats["pct_two_or_less_tokens_words"]
+    delta_two = (
+        baseline_stats["pct_two_or_less_tokens_words"]
+        - current_stats["pct_two_or_less_tokens_words"]
+    )
     if delta_two > two_token_drop_tolerance:
         violations.append(
-            f"pct_two_or_less_tokens_words dropped by {delta_two:.4f} (limit {two_token_drop_tolerance:.4f})."
+            f"pct_two_or_less_tokens_words dropped by {delta_two:.4f} "
+            f"(limit {two_token_drop_tolerance:.4f})."
         )
 
     payload = json.dumps(current_stats, indent=2)

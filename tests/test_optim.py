@@ -27,3 +27,15 @@ def test_deep_momentum_nl_preconditioner_reduces_simple_objective() -> None:
         new_weights = weights - 0.1 * update
         new_obj = 0.5 * torch.dot(new_weights, context) ** 2
     assert new_obj < old_obj
+
+
+def test_deep_momentum_keeps_state_per_param_key() -> None:
+    optimizer = DeepMomentum(beta=0.5, beta2=0.0, variant="preconditioned")
+    grad_a = torch.ones(2, 3)
+    grad_b = torch.ones(5)
+    out_a1 = optimizer(grad_a, param_key="a").detach().clone()
+    _ = optimizer(grad_b, param_key="b")
+    out_a2 = optimizer(grad_a, param_key="a").detach().clone()
+    assert out_a2.shape == out_a1.shape
+    assert torch.all(out_a2 > out_a1)
+    assert set(optimizer.state.keys()) == {"a", "b"}

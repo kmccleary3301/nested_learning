@@ -7,7 +7,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import typer
 
-
 app = typer.Typer(add_completion=False, help="Plot continual-learning forgetting curves.")
 
 

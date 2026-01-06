@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from contextlib import nullcontext
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -15,6 +15,9 @@ class AttentionConfig:
     dropout: float = 0.0
     use_flash: bool = True
     causal: bool = True
+    qk_l2_norm: bool = False
+    qk_norm_eps: float = 1e-6
+    local_conv_window: int | None = None
 
 
 class SelfAttention(nn.Module):
@@ -30,10 +33,31 @@ class SelfAttention(nn.Module):
         self.out_proj = nn.Linear(config.dim, config.dim, bias=False)
         self.resid_dropout = nn.Dropout(config.dropout)
         self.norm = nn.LayerNorm(config.dim)
+        self.local_conv: nn.Conv1d | None = None
+        if config.local_conv_window is not None:
+            window = int(config.local_conv_window)
+            if window <= 0:
+                raise ValueError("local_conv_window must be positive")
+            self.local_conv = nn.Conv1d(
+                config.dim,
+                config.dim,
+                kernel_size=window,
+                groups=config.dim,
+                padding=0,
+                bias=False,
+            )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
         residual = x
-        q, k, v = self._compute_qkv(x)
+        attn_inp = x
+        if self.local_conv is not None:
+            kernel = self.local_conv.kernel_size[0]
+            left_pad = (kernel - 1) // 2
+            right_pad = kernel - 1 - left_pad
+            attn_inp = attn_inp.transpose(1, 2)
+            attn_inp = F.pad(attn_inp, (left_pad, right_pad))
+            attn_inp = self.local_conv(attn_inp).transpose(1, 2)
+        q, k, v = self._compute_qkv(attn_inp)
         attn_output = self._scaled_dot_product_attn(q, k, v)
         attn_output = attn_output.transpose(1, 2).contiguous().view(x.size(0), x.size(1), -1)
         attn_output = self.out_proj(attn_output)
@@ -47,6 +71,9 @@ class SelfAttention(nn.Module):
         q = q.view(*shape).transpose(1, 2)
         k = k.view(*shape).transpose(1, 2)
         v = v.view(*shape).transpose(1, 2)
+        if self.config.qk_l2_norm:
+            q = F.normalize(q, dim=-1, eps=self.config.qk_norm_eps)
+            k = F.normalize(k, dim=-1, eps=self.config.qk_norm_eps)
         return q, k, v
 
     def _scaled_dot_product_attn(

@@ -38,9 +38,7 @@ class TitanMemory(AssocMemory):
         blocks = []
         activation = _activation(config.activation)
         for layer_idx in range(config.layers - 1):
-            blocks.extend(
-                [nn.Linear(config.dim if layer_idx == 0 else hidden, hidden), activation]
-            )
+            blocks.extend([nn.Linear(config.dim if layer_idx == 0 else hidden, hidden), activation])
         blocks.append(nn.Linear(hidden if config.layers > 1 else config.dim, config.dim))
         self.net = nn.Sequential(*blocks)
         self.norm = nn.LayerNorm(config.dim)

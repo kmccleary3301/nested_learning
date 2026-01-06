@@ -9,7 +9,12 @@ import torch
 import typer
 from omegaconf import OmegaConf
 
-from nested_learning.memorize import MemorizeConfig, memorize_sequence, restore_state_dict, snapshot_state_dict
+from nested_learning.memorize import (
+    MemorizeConfig,
+    memorize_sequence,
+    restore_state_dict,
+    snapshot_state_dict,
+)
 from nested_learning.tokenizer import SentencePieceTokenizer
 from nested_learning.training import build_model_from_cfg, unwrap_config
 
@@ -40,12 +45,14 @@ def make_prompt(context_tokens: int, key: str) -> str:
     return PROMPT_TEMPLATE.format(filler=filler, key=key)
 
 
-def logprob(model, tokenizer, prompt: str, answer: str, device: torch.device) -> float:
+def logprob(
+    model, tokenizer, prompt: str, answer: str, device: torch.device, *, fast_state=None
+) -> float:
     prompt_ids = tokenizer.encode(prompt, add_bos=True)
     answer_ids = tokenizer.encode(" " + answer, add_bos=False, add_eos=True)
     tokens = torch.cat([prompt_ids, answer_ids], dim=0).unsqueeze(0).to(device)
     with torch.no_grad():
-        logits = model(tokens)
+        logits = model(tokens, fast_state=fast_state) if fast_state is not None else model(tokens)
         log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
         targets = tokens[:, 1:]
         gathered = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
@@ -70,7 +77,10 @@ def main(
     ),
     memorize_paths: str = typer.Option(
         "all",
-        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' for unrestricted paths.",
+        help=(
+            "Comma-separated memory paths to update (e.g., 'titan,cms_fast'); "
+            "use 'all' for unrestricted paths."
+        ),
     ),
 ) -> None:
     torch_device = torch.device(device)
@@ -88,7 +98,12 @@ def main(
         surprise_threshold=memorize_surprise_threshold,
         paths=allowed_paths,
     )
-    base_state = snapshot_state_dict(model) if memorize_cfg.enabled and memorize_cfg.reset else None
+    base_state = (
+        snapshot_state_dict(model)
+        if memorize_cfg.enabled and (not memorize_cfg.use_fast_state) and memorize_cfg.reset
+        else None
+    )
+    fast_state = None
     correct_base = 0
     correct_mem = 0
     path_stats: dict[str, float] = {}
@@ -100,14 +115,32 @@ def main(
         lp_false = logprob(model, tokenizer, prompt, distractor, torch_device)
         correct_base += int(lp_true > lp_false)
         if memorize_cfg.enabled:
-            stats = memorize_sequence(model, tokenizer, prompt, torch_device, memorize_cfg)
-            for k, v in stats.items():
-                path_stats[k] = path_stats.get(k, 0.0) + v
-            lp_true_mem = logprob(model, tokenizer, prompt, key, torch_device)
-            lp_false_mem = logprob(model, tokenizer, prompt, distractor, torch_device)
-            correct_mem += int(lp_true_mem > lp_false_mem)
-            if memorize_cfg.reset and base_state is not None:
-                restore_state_dict(model, base_state)
+            if memorize_cfg.use_fast_state:
+                if fast_state is None or memorize_cfg.reset:
+                    if not hasattr(model, "init_fast_state"):
+                        raise RuntimeError("Model does not support fast state memorization")
+                    fast_state = model.init_fast_state()
+                stats = memorize_sequence(
+                    model, tokenizer, prompt, torch_device, memorize_cfg, fast_state=fast_state
+                )
+                for k, v in stats.items():
+                    path_stats[k] = path_stats.get(k, 0.0) + v
+                lp_true_mem = logprob(
+                    model, tokenizer, prompt, key, torch_device, fast_state=fast_state
+                )
+                lp_false_mem = logprob(
+                    model, tokenizer, prompt, distractor, torch_device, fast_state=fast_state
+                )
+                correct_mem += int(lp_true_mem > lp_false_mem)
+            else:
+                stats = memorize_sequence(model, tokenizer, prompt, torch_device, memorize_cfg)
+                for k, v in stats.items():
+                    path_stats[k] = path_stats.get(k, 0.0) + v
+                lp_true_mem = logprob(model, tokenizer, prompt, key, torch_device)
+                lp_false_mem = logprob(model, tokenizer, prompt, distractor, torch_device)
+                correct_mem += int(lp_true_mem > lp_false_mem)
+                if memorize_cfg.reset and base_state is not None:
+                    restore_state_dict(model, base_state)
         else:
             correct_mem += int(lp_true > lp_false)
     base_acc = correct_base / samples if samples else 0.0

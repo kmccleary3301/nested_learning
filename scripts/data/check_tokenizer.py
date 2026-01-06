@@ -38,7 +38,10 @@ def parse_args() -> argparse.Namespace:
         "--expected-sha256",
         type=str,
         default=None,
-        help="Optional expected checksum; if provided and mismatch occurs, exits with non-zero status.",
+        help=(
+            "Optional expected checksum; if provided and mismatch occurs, "
+            "exits with non-zero status."
+        ),
     )
     parser.add_argument(
         "--metadata-json",
@@ -69,8 +72,7 @@ def main() -> None:
     expected = args.expected_sha256
     if expected and expected.lower() != sha256.lower():
         raise SystemExit(
-            f"Checksum mismatch for {tokenizer_path} "
-            f"(expected {expected}, got {sha256})"
+            f"Checksum mismatch for {tokenizer_path} (expected {expected}, got {sha256})"
         )
 
 

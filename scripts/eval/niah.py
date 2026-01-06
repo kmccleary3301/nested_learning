@@ -12,15 +12,15 @@ import typer
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from nested_learning.model import HOPEModel
 from nested_learning.memorize import (
     MemorizeConfig,
     memorize_sequence,
     restore_state_dict,
     snapshot_state_dict,
 )
-from nested_learning.training import build_model_from_cfg, unwrap_config
+from nested_learning.model import HOPEModel
 from nested_learning.tokenizer import SentencePieceTokenizer
+from nested_learning.training import build_model_from_cfg, unwrap_config
 
 app = typer.Typer(add_completion=False, help="Needle-in-a-haystack evaluation scaffolding.")
 
@@ -44,17 +44,31 @@ def make_prompt(needle: str, filler_tokens: int) -> str:
     filler_chunks = ["This is filler sentence number {}.".format(i) for i in range(filler_tokens)]
     random.shuffle(filler_chunks)
     haystack = " ".join(filler_chunks)
-    prompt = f"{haystack} Remember that the secret key is {needle}. Later you might be asked about it. "
+    prompt = (
+        f"{haystack} Remember that the secret key is {needle}. Later you might be asked about it. "
+    )
     prompt += "Now answer the question truthfully. What is the secret key? Answer:"
     return prompt
 
 
-def logprob_answer(model: HOPEModel, tokenizer: SentencePieceTokenizer, prompt: str, answer: str, device: torch.device) -> float:
+def logprob_answer(
+    model: HOPEModel,
+    tokenizer: SentencePieceTokenizer,
+    prompt: str,
+    answer: str,
+    device: torch.device,
+    *,
+    fast_state=None,
+) -> float:
     prompt_ids = tokenizer.encode(prompt, add_bos=True)
     answer_ids = tokenizer.encode(" " + answer, add_bos=False)
     inputs = torch.cat([prompt_ids, answer_ids], dim=0).to(device)
     with torch.no_grad():
-        logits = model(inputs.unsqueeze(0))
+        logits = (
+            model(inputs.unsqueeze(0), fast_state=fast_state)
+            if fast_state is not None
+            else model(inputs.unsqueeze(0))
+        )
         log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
         target = inputs.unsqueeze(0)[:, 1:]
         gathered = log_probs.gather(-1, target.unsqueeze(-1)).squeeze(-1)
@@ -74,14 +88,19 @@ def main(
     output: Path = typer.Option(Path("eval/niah_results.json")),
     memorize: bool = typer.Option(False, help="Enable test-time memorization for each prompt."),
     memorize_steps: int = typer.Option(1, help="Memorization passes per prompt."),
-    memorize_use_correct_answer: bool = typer.Option(False, help="Include correct key when memorizing."),
+    memorize_use_correct_answer: bool = typer.Option(
+        False, help="Include correct key when memorizing."
+    ),
     memorize_no_reset: bool = typer.Option(False, help="Retain memory between samples."),
     memorize_surprise_threshold: float = typer.Option(
         None, help="Minimum teach-signal norm required to trigger memorization."
     ),
     memorize_paths: str = typer.Option(
         "all",
-        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' for no restriction.",
+        help=(
+            "Comma-separated memory paths to update (e.g., 'titan,cms_fast'); "
+            "use 'all' for no restriction."
+        ),
     ),
 ) -> None:
     torch_device = torch.device(device)
@@ -100,6 +119,7 @@ def main(
         paths=allowed_paths,
     )
     base_state: Dict[str, torch.Tensor] | None = None
+    fast_state = None
     results = {}
     path_stats: Dict[str, float] = defaultdict(float)
     for length in context_lengths:
@@ -113,19 +133,48 @@ def main(
             logprob_false_base = logprob_answer(model, tokenizer, prompt, distractor, torch_device)
             correct_base += int(logprob_true_base > logprob_false_base)
             if memorize_cfg.enabled:
-                if memorize_cfg.reset and base_state is None:
-                    base_state = snapshot_state_dict(model)
                 memorize_text = prompt
                 if memorize_cfg.use_correct_answer:
                     memorize_text = f"{prompt} {needle}"
-                stats = memorize_sequence(model, tokenizer, memorize_text, torch_device, memorize_cfg)
-                for key, value in stats.items():
-                    path_stats[key] += value
-                logprob_true_mem = logprob_answer(model, tokenizer, prompt, needle, torch_device)
-                logprob_false_mem = logprob_answer(model, tokenizer, prompt, distractor, torch_device)
-                correct_mem += int(logprob_true_mem > logprob_false_mem)
-                if memorize_cfg.enabled and memorize_cfg.reset and base_state is not None:
-                    restore_state_dict(model, base_state)
+                if memorize_cfg.use_fast_state:
+                    if fast_state is None or memorize_cfg.reset:
+                        if not hasattr(model, "init_fast_state"):
+                            raise RuntimeError("Model does not support fast state memorization")
+                        fast_state = model.init_fast_state()
+                    stats = memorize_sequence(
+                        model,
+                        tokenizer,
+                        memorize_text,
+                        torch_device,
+                        memorize_cfg,
+                        fast_state=fast_state,
+                    )
+                    for key, value in stats.items():
+                        path_stats[key] += value
+                    logprob_true_mem = logprob_answer(
+                        model, tokenizer, prompt, needle, torch_device, fast_state=fast_state
+                    )
+                    logprob_false_mem = logprob_answer(
+                        model, tokenizer, prompt, distractor, torch_device, fast_state=fast_state
+                    )
+                    correct_mem += int(logprob_true_mem > logprob_false_mem)
+                else:
+                    if memorize_cfg.reset and base_state is None:
+                        base_state = snapshot_state_dict(model)
+                    stats = memorize_sequence(
+                        model, tokenizer, memorize_text, torch_device, memorize_cfg
+                    )
+                    for key, value in stats.items():
+                        path_stats[key] += value
+                    logprob_true_mem = logprob_answer(
+                        model, tokenizer, prompt, needle, torch_device
+                    )
+                    logprob_false_mem = logprob_answer(
+                        model, tokenizer, prompt, distractor, torch_device
+                    )
+                    correct_mem += int(logprob_true_mem > logprob_false_mem)
+                    if memorize_cfg.reset and base_state is not None:
+                        restore_state_dict(model, base_state)
             else:
                 correct_mem += int(logprob_true_base > logprob_false_base)
         base_acc = correct_base / samples_per_length if samples_per_length else 0.0

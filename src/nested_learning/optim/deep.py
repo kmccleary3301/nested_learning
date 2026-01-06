@@ -29,18 +29,18 @@ class DeepMomentum(nn.Module):
         self.beta2 = beta2
         self.eps = eps
         self.variant = variant
-        self.state = DeepMomentumState()
+        self.state: dict[str, DeepMomentumState] = {}
         self.nonlinearity = nn.Tanh() if variant in {"dmgd", "muon"} else nn.Identity()
         self.last_metrics: dict[str, float] = {}
 
     def reset_state(self) -> None:
-        self.state = DeepMomentumState()
+        self.state.clear()
 
-    def _precondition(self, grad: torch.Tensor) -> torch.Tensor:
-        if self.state.sq_avg is None or self.state.sq_avg.shape != grad.shape:
-            self.state.sq_avg = torch.zeros_like(grad)
-        self.state.sq_avg.mul_(self.beta2).addcmul_(grad, grad, value=1 - self.beta2)
-        denom = self.state.sq_avg.sqrt().add_(self.eps)
+    def _precondition(self, grad: torch.Tensor, state: DeepMomentumState) -> torch.Tensor:
+        if state.sq_avg is None or state.sq_avg.shape != grad.shape:
+            state.sq_avg = torch.zeros_like(grad)
+        state.sq_avg.mul_(self.beta2).addcmul_(grad, grad, value=1 - self.beta2)
+        denom = state.sq_avg.sqrt().add_(self.eps)
         return grad / denom
 
     def _nl_precondition(
@@ -66,13 +66,24 @@ class DeepMomentum(nn.Module):
             return update, metrics
         return grad, metrics
 
-    def forward(self, grad: torch.Tensor, *, context: torch.Tensor | None = None) -> torch.Tensor:  # type: ignore[override]
-        if self.state.grad_avg is None or self.state.grad_avg.shape != grad.shape:
-            self.state.grad_avg = torch.zeros_like(grad)
+    def forward(  # type: ignore[override]
+        self,
+        grad: torch.Tensor,
+        *,
+        context: torch.Tensor | None = None,
+        param_key: str | None = None,
+    ) -> torch.Tensor:
+        key = param_key or "__default__"
+        state = self.state.get(key)
+        if state is None:
+            state = DeepMomentumState()
+            self.state[key] = state
+        if state.grad_avg is None or state.grad_avg.shape != grad.shape:
+            state.grad_avg = torch.zeros_like(grad)
         self.last_metrics = {}
         update = grad
         if self.variant in {"preconditioned", "muon"}:
-            update = self._precondition(grad)
+            update = self._precondition(grad, state)
         if self.variant == "l2_objective":
             update = grad + 0.1 * torch.mean(grad, dim=-1, keepdim=True)
         if self.variant == "nl_l2_precond":
@@ -80,5 +91,5 @@ class DeepMomentum(nn.Module):
             self.last_metrics.update(metrics)
         if self.variant in {"dmgd", "muon"}:
             update = self.nonlinearity(update)
-        self.state.grad_avg.mul_(self.beta).add_(update, alpha=1 - self.beta)
-        return self.state.grad_avg
+        state.grad_avg.mul_(self.beta).add_(update, alpha=1 - self.beta)
+        return state.grad_avg

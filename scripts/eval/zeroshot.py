@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Tuple
 
 import torch
 import typer
@@ -18,8 +18,8 @@ from nested_learning.memorize import (
     restore_state_dict,
     snapshot_state_dict,
 )
-from nested_learning.training import build_model_from_cfg, unwrap_config
 from nested_learning.tokenizer import SentencePieceTokenizer
+from nested_learning.training import build_model_from_cfg, unwrap_config
 
 app = typer.Typer(add_completion=False, help="Zero-shot evaluation harness for HOPE.")
 HF_DATASET_KWARGS = {"trust_remote_code": True}
@@ -40,11 +40,17 @@ def load_model(config_path: Path, checkpoint: Path, device: torch.device):
     return model.to(device).eval()
 
 
-def score_text(model, tokenizer: SentencePieceTokenizer, text: str, device: torch.device) -> float:
+def score_text(
+    model, tokenizer: SentencePieceTokenizer, text: str, device: torch.device, *, fast_state=None
+) -> float:
     tokens = tokenizer.encode(text)
     tokens = tokens.to(device)
     with torch.no_grad():
-        logits = model(tokens.unsqueeze(0))
+        logits = (
+            model(tokens.unsqueeze(0), fast_state=fast_state)
+            if fast_state is not None
+            else model(tokens.unsqueeze(0))
+        )
         log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
         target = tokens.unsqueeze(0)[:, 1:]
         gathered = log_probs.gather(-1, target.unsqueeze(-1)).squeeze(-1)
@@ -65,6 +71,7 @@ def evaluate_multiple_choice(
     correct_base = 0
     total = 0
     base_state: Dict[str, torch.Tensor] | None = None
+    fast_state = None
     path_stats: Dict[str, float] = defaultdict(float)
     for sample in tqdm(dataset_iter, desc=task_name.upper()):
         prompt, texts, answer_idx = build_texts_fn(sample)
@@ -72,21 +79,42 @@ def evaluate_multiple_choice(
         pred_base = int(max(range(len(scores_base)), key=lambda i: scores_base[i]))
         correct_base += int(pred_base == answer_idx)
         if memorize_cfg.enabled:
-            if memorize_cfg.reset and base_state is None:
-                base_state = snapshot_state_dict(model)
             memorize_text = prompt
             if memorize_cfg.use_correct_answer:
                 memorize_text = f"{prompt} {texts[answer_idx]}".strip()
-            stats = memorize_sequence(model, tokenizer, memorize_text, device, memorize_cfg)
-            for key, value in stats.items():
-                path_stats[key] += value
-            scores_eval = [score_text(model, tokenizer, t, device) for t in texts]
-            pred_eval = int(max(range(len(scores_eval)), key=lambda i: scores_eval[i]))
-            correct_mem += int(pred_eval == answer_idx)
+            if memorize_cfg.use_fast_state:
+                if fast_state is None or memorize_cfg.reset:
+                    if not hasattr(model, "init_fast_state"):
+                        raise RuntimeError("Model does not support fast state memorization")
+                    fast_state = model.init_fast_state()
+                stats = memorize_sequence(
+                    model, tokenizer, memorize_text, device, memorize_cfg, fast_state=fast_state
+                )
+                for key, value in stats.items():
+                    path_stats[key] += value
+                scores_eval = [
+                    score_text(model, tokenizer, t, device, fast_state=fast_state) for t in texts
+                ]
+                pred_eval = int(max(range(len(scores_eval)), key=lambda i: scores_eval[i]))
+                correct_mem += int(pred_eval == answer_idx)
+            else:
+                if memorize_cfg.reset and base_state is None:
+                    base_state = snapshot_state_dict(model)
+                stats = memorize_sequence(model, tokenizer, memorize_text, device, memorize_cfg)
+                for key, value in stats.items():
+                    path_stats[key] += value
+                scores_eval = [score_text(model, tokenizer, t, device) for t in texts]
+                pred_eval = int(max(range(len(scores_eval)), key=lambda i: scores_eval[i]))
+                correct_mem += int(pred_eval == answer_idx)
         else:
             correct_mem += int(pred_base == answer_idx)
         total += 1
-        if memorize_cfg.enabled and memorize_cfg.reset and base_state is not None:
+        if (
+            memorize_cfg.enabled
+            and (not memorize_cfg.use_fast_state)
+            and memorize_cfg.reset
+            and base_state is not None
+        ):
             restore_state_dict(model, base_state)
         if max_samples and total >= max_samples:
             break
@@ -177,7 +205,9 @@ def build_arc_texts(sample: dict) -> Tuple[str, List[str], int]:
     return prompt, texts, target
 
 
-def eval_arc(model, tokenizer, device, max_samples, difficulty: str, memorize_cfg: MemorizeConfig) -> Dict[str, float]:
+def eval_arc(
+    model, tokenizer, device, max_samples, difficulty: str, memorize_cfg: MemorizeConfig
+) -> Dict[str, float]:
     dataset = load_dataset("ai2_arc", difficulty, split="validation", **HF_DATASET_KWARGS)
     return evaluate_multiple_choice(
         f"arc_{difficulty.lower()}",
@@ -271,7 +301,9 @@ TASK_EVALUATORS = {
     "hellaswag": eval_hellaswag,
     "winogrande": eval_winogrande,
     "arc_easy": lambda model, tok, dev, n, mem: eval_arc(model, tok, dev, n, "ARC-Easy", mem),
-    "arc_challenge": lambda model, tok, dev, n, mem: eval_arc(model, tok, dev, n, "ARC-Challenge", mem),
+    "arc_challenge": lambda model, tok, dev, n, mem: eval_arc(
+        model, tok, dev, n, "ARC-Challenge", mem
+    ),
     "boolq": eval_boolq,
     "siqa": eval_siqa,
     "commonsenseqa": eval_commonsenseqa,
@@ -287,20 +319,27 @@ def main(
     tasks: str = typer.Option("piqa", help="Comma-separated list of tasks or 'all'."),
     max_samples: int = typer.Option(500, help="Max samples per task (0 = entire split)."),
     output: Path = typer.Option(Path("eval/zeroshot_results.json"), help="Output JSON file."),
-    device: str = typer.Option("cuda:0" if torch.cuda.is_available() else "cpu", help="Device to run eval on."),
+    device: str = typer.Option(
+        "cuda:0" if torch.cuda.is_available() else "cpu", help="Device to run eval on."
+    ),
     list_tasks: bool = typer.Option(False, "--list-tasks", help="List available tasks and exit."),
     memorize: bool = typer.Option(False, help="Enable test-time memorization updates."),
     memorize_steps: int = typer.Option(1, help="Number of memorize passes per sample."),
     memorize_use_correct_answer: bool = typer.Option(
         False, help="When memorizing, include the correct answer text (for ablations)."
     ),
-    memorize_no_reset: bool = typer.Option(False, help="If set, retain memorization across samples."),
+    memorize_no_reset: bool = typer.Option(
+        False, help="If set, retain memorization across samples."
+    ),
     memorize_surprise_threshold: float = typer.Option(
         None, help="Minimum teach-signal norm required before applying memorization."
     ),
     memorize_paths: str = typer.Option(
         "all",
-        help="Comma-separated memory paths to update (e.g., 'titan,cms_fast'); use 'all' to allow every path.",
+        help=(
+            "Comma-separated memory paths to update (e.g., 'titan,cms_fast'); "
+            "use 'all' to allow every path."
+        ),
     ),
 ) -> None:
     available = list(TASK_EVALUATORS.keys())
@@ -308,7 +347,9 @@ def main(
         typer.echo("Available tasks: " + ", ".join(available))
         raise typer.Exit(0)
 
-    selected_tasks = available if tasks.lower() == "all" else [t.strip().lower() for t in tasks.split(",")]
+    selected_tasks = (
+        available if tasks.lower() == "all" else [t.strip().lower() for t in tasks.split(",")]
+    )
     torch_device = torch.device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)

@@ -8,7 +8,6 @@ from typing import Optional
 
 import typer
 
-
 app = typer.Typer(add_completion=False, help="Validate mixture manifests and shard inventories.")
 
 
@@ -28,7 +27,9 @@ def _dir_stats(path: Path, sample_limit: int = 2000) -> tuple[dict[str, float], 
 def main(
     manifest: Path = typer.Option(..., help="Path to data/manifest/*.json file."),
     output: Optional[Path] = typer.Option(None, help="Optional JSON output path for the report."),
-    overlap_threshold: float = typer.Option(0.05, help="Warn when filename overlap exceeds this Jaccard."),
+    overlap_threshold: float = typer.Option(
+        0.05, help="Warn when filename overlap exceeds this Jaccard."
+    ),
 ) -> None:
     spec = json.loads(manifest.read_text())
     report = {"manifest": spec.get("name"), "sources": []}

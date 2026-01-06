@@ -22,6 +22,8 @@ uv run python scripts/eval/continual.py \
 
 With memorization enabled the output includes baseline vs. memorize cross-entropy, Titan/CMS update stats per segment, the active memory paths, and the surprise threshold used. Adjust `--memorize-paths` (comma-separated) to restrict which levels update (e.g., `titan` only, or `titan,cms_fast`) and `--memorize-surprise-threshold` to replicate the paper’s surprise gating.
 
+Note: memorization uses a per-context fast state by default, so evaluation does not mutate checkpoint weights.
+
 To visualize forgetting curves:
 
 ```bash

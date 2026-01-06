@@ -5,7 +5,7 @@ This guide is a self-contained reference for reproducing Google's Nested Learnin
 ---
 
 ## 1. Objectives & Scope
-- **Goal:** Provide a faithful, open-source reproduction of HOPE blocks (attention → TITAN memory → CMS self-modifier) ready for community scaling.
+- **Goal:** Provide a faithful, open-source reproduction of HOPE blocks (self-modifying Titans → CMS, plus HOPE-Attention/Transformer baselines) ready for community scaling.
 - **Hardware targets:** Works on CPU for smoke tests; optimized for dual RTX 6000 Ada. Larger configs document how to extend to future H200 nodes.
 - **Outputs:** Clean PyTorch 2.9 codebase, reproducible data + training workflows, documented evaluation harness, and guidance for future releases.
 
@@ -107,7 +107,9 @@ Document disk needs (≈2 TB for 100 B tokens) before launching large jobs.
 |--------|---------|
 | `scripts/eval/zeroshot.py` | PIQA, HellaSwag, WinoGrande, ARC-E/C, BoolQ, SIQA; specify `--tasks all` for full sweep |
 | `scripts/eval/niah.py` | Needle-in-a-Haystack / long-context recall up to 32k tokens (extendable) |
+| `scripts/eval/niah_suite.py` | RULER-ish NIAH suite (multi-needle / KV retrieval / positioned needles) |
 | `scripts/eval/continual.py` | Measures forgetting across sequential dataset segments described via YAML |
+| `scripts/eval/continual_classification.py` | Class-incremental continual classification (CLINC/Banking77/DBpedia14) |
 
 Example zero-shot run:
 ```bash

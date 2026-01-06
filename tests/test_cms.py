@@ -1,64 +1,53 @@
 import torch
 
 from nested_learning.cms import CMS
+from nested_learning.hope.block import HOPEAttentionBlock, HOPEAttentionBlockConfig
 from nested_learning.levels import LevelSpec
 
 
-def test_cms_forward_and_update() -> None:
+def test_cms_forward_preserves_shape() -> None:
     cms = CMS(
         dim=16,
-        levels=[LevelSpec(name="fast", update_period=1), LevelSpec(name="slow", update_period=2)],
+        levels=[LevelSpec(name="fast", update_period=2), LevelSpec(name="slow", update_period=4)],
     )
-    x = torch.randn(2, 4, 16)
+    x = torch.randn(2, 9, 16)
     out, inputs, outputs = cms(x, return_intermediates=True)
     assert out.shape == x.shape
-    chunks = cms.accumulate_chunks(inputs=inputs, outputs=outputs)
-    assert "fast" in chunks
-    assert "slow" not in chunks
+    assert set(inputs.keys()) == {"fast", "slow"}
+    assert set(outputs.keys()) == {"fast", "slow"}
 
 
-def test_cms_chunk_accumulation_respects_period() -> None:
-    cms = CMS(
-        dim=8,
-        levels=[LevelSpec(name="fast", update_period=1), LevelSpec(name="slow", update_period=3)],
+def test_cms_updates_respect_update_period_tokens() -> None:
+    cfg = HOPEAttentionBlockConfig(
+        dim=16,
+        heads=4,
+        cms_levels=[
+            LevelSpec(name="fast", update_period=2),
+            LevelSpec(name="slow", update_period=4),
+        ],
+        optimizer_configs={},
     )
-    ready_counts = {"fast": 0, "slow": 0}
-    for step in range(5):
-        x = torch.randn(2, 3, 8)
-        _, inputs, outputs = cms(x, return_intermediates=True)
-        chunks = cms.accumulate_chunks(inputs=inputs, outputs=outputs)
-        for level in list(chunks.keys()):
-            ready_counts[level] += 1
-            cms.consume_chunk(level)
-        if step < 2:
-            assert "slow" not in chunks
-    assert ready_counts["fast"] == 5
-    assert ready_counts["slow"] == 1
+    block = HOPEAttentionBlock(cfg)
+    x = torch.randn(1, 9, 16)
+    teach = torch.randn_like(x)
+    _ = block(x, teach_signal=teach)
+    stats = block.pop_update_stats()
+    assert stats["cms.fast"]["gate_hit"] == 4.0
+    assert stats["cms.fast"]["chunk_tokens"] == 8.0
+    assert stats["cms.slow"]["gate_hit"] == 2.0
+    assert stats["cms.slow"]["chunk_tokens"] == 8.0
 
 
-def test_cms_chunk_persists_until_consumed() -> None:
-    level = LevelSpec(name="slow", update_period=2)
-    cms = CMS(dim=4, levels=[level])
-    for step in range(2):
-        x = torch.randn(1, 2, 4)
-        _, inputs, outputs = cms(x, return_intermediates=True)
-        chunks = cms.accumulate_chunks(inputs=inputs, outputs=outputs)
-        if step < 1:
-            assert not chunks
-        else:
-            assert "slow" in chunks
-            break
-    # Without consuming, chunk should remain ready
-    x = torch.randn(1, 2, 4)
-    _, inputs, outputs = cms(x, return_intermediates=True)
-    chunks = cms.accumulate_chunks(inputs=inputs, outputs=outputs)
-    assert "slow" in chunks
-    cms.consume_chunk("slow")
-    # Need two more steps to get another chunk
-    for step in range(2):
-        x = torch.randn(1, 2, 4)
-        _, inputs, outputs = cms(x, return_intermediates=True)
-        chunks = cms.accumulate_chunks(inputs=inputs, outputs=outputs)
-        if step == 0:
-            assert "slow" not in chunks
-    assert "slow" in chunks
+def test_cms_updates_skip_when_no_signal() -> None:
+    cfg = HOPEAttentionBlockConfig(
+        dim=16,
+        heads=4,
+        cms_levels=[LevelSpec(name="fast", update_period=2)],
+        optimizer_configs={},
+    )
+    block = HOPEAttentionBlock(cfg)
+    x = torch.randn(1, 8, 16)
+    teach = torch.zeros_like(x)
+    _ = block(x, teach_signal=teach)
+    stats = block.pop_update_stats()
+    assert stats == {}
