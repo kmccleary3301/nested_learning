@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from nested_learning.levels import LevelSpec
 from nested_learning.model import HOPEModel, ModelConfig
 from nested_learning.titan.model import TitanOnlyModel, TitanOnlyModelConfig
-from nested_learning.training import compute_teach_signal
+from nested_learning.training import _compute_layer_teach_signals, compute_teach_signal
 
 
 def _tiny_config() -> ModelConfig:
@@ -92,3 +92,19 @@ def test_teach_signal_matches_gradient_titan() -> None:
     assert hidden.grad is not None
     grad = hidden.grad
     assert torch.allclose(teach_signal, grad, atol=1e-5, rtol=1e-4)
+
+
+def test_per_layer_teach_signal_shapes() -> None:
+    torch.manual_seed(0)
+    cfg = _tiny_config()
+    model = HOPEModel(cfg)
+    tokens = torch.randint(0, cfg.vocab_size, (2, 6))
+    logits, _pre, block_outputs = model.forward_with_block_outputs(tokens)
+    loss = F.cross_entropy(
+        logits[:, :-1].reshape(-1, cfg.vocab_size),
+        tokens[:, 1:].reshape(-1),
+    )
+    teach_signals = _compute_layer_teach_signals(loss, block_outputs)
+    assert len(teach_signals) == cfg.num_layers
+    for signal, output in zip(teach_signals, block_outputs):
+        assert signal.shape == output.shape

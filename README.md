@@ -88,6 +88,19 @@ Developer checks:
     deepspeed.config=configs/deepspeed/zero3.json
   ```
 
+### Paper-faithful mode (HOPE / Nested Learning)
+
+Enable online updates and per‑layer local error signals (δℓ):
+
+```bash
+train.online_updates=true
+train.online_chunk_size=0     # auto‑infer min CMS update period
+train.per_layer_teach_signal=true
+optim.type=m3                # optional: paper M3 optimizer
+```
+
+See `docs/PAPER_COMPLIANCE.md` for full fidelity notes.
+
 ### Pilot (3 B tokens) workflow
 1. Ensure TMUX session:
    ```bash

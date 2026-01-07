@@ -183,10 +183,14 @@ class HOPEModel(nn.Module):
         tokens: torch.Tensor,
         *,
         teach_signal: torch.Tensor | None = None,
+        teach_signals: list[torch.Tensor] | None = None,
         fast_state: ModelFastState | None = None,
     ) -> torch.Tensor:
         logits, _pre_norm = self.forward_with_pre_norm(
-            tokens, teach_signal=teach_signal, fast_state=fast_state
+            tokens,
+            teach_signal=teach_signal,
+            teach_signals=teach_signals,
+            fast_state=fast_state,
         )
         return logits
 
@@ -195,15 +199,43 @@ class HOPEModel(nn.Module):
         tokens: torch.Tensor,
         *,
         teach_signal: torch.Tensor | None = None,
+        teach_signals: list[torch.Tensor] | None = None,
         fast_state: ModelFastState | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        x = self._run_blocks(tokens, teach_signal=teach_signal, fast_state=fast_state)
-        pre_norm = x
-        x = self.norm(x)
+        x = self._run_blocks(
+            tokens,
+            teach_signal=teach_signal,
+            teach_signals=teach_signals,
+            fast_state=fast_state,
+        )
+        pre_norm = cast(torch.Tensor, x)
+        x = self.norm(pre_norm)
         logits = self.lm_head(x)
         if teach_signal is not None:
             self._latest_update_metrics = self._gather_block_stats()
         return logits, pre_norm
+
+    def forward_with_block_outputs(
+        self,
+        tokens: torch.Tensor,
+        *,
+        teach_signal: torch.Tensor | None = None,
+        teach_signals: list[torch.Tensor] | None = None,
+        fast_state: ModelFastState | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        x, block_outputs = self._run_blocks(
+            tokens,
+            teach_signal=teach_signal,
+            teach_signals=teach_signals,
+            fast_state=fast_state,
+            collect_outputs=True,
+        )
+        pre_norm = x
+        x = self.norm(x)
+        logits = self.lm_head(x)
+        if teach_signal is not None or teach_signals is not None:
+            self._latest_update_metrics = self._gather_block_stats()
+        return logits, pre_norm, block_outputs
 
     def _run_blocks(
         self,
@@ -211,18 +243,42 @@ class HOPEModel(nn.Module):
         *,
         teach_signal: torch.Tensor | None,
         fast_state: ModelFastState | None,
-    ) -> torch.Tensor:
+        teach_signals: list[torch.Tensor] | None = None,
+        collect_outputs: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         x = self.embed(tokens)
+        block_outputs: list[torch.Tensor] = []
         surprise_value: float | None = None
         if teach_signal is not None:
             surprise_value = float(teach_signal.norm(dim=-1).mean().item())
+        if teach_signals is not None:
+            if len(teach_signals) != len(self.blocks):
+                raise ValueError(
+                    f"teach_signals length {len(teach_signals)} "
+                    f"does not match blocks {len(self.blocks)}"
+                )
+            if teach_signal is not None:
+                raise ValueError("Provide either teach_signal or teach_signals, not both.")
         if fast_state is not None and len(fast_state.blocks) != len(self.blocks):
             raise ValueError("fast_state.blocks length does not match model.blocks")
         for idx, block in enumerate(self.blocks):
             block_state = None if fast_state is None else fast_state.blocks[idx]
             scaled_signal = None
+            block_surprise = surprise_value
             if teach_signal is not None:
                 scaled_signal = teach_signal * self._runtime_teach_scale
+                if self._runtime_teach_clip > 0:
+                    norm = scaled_signal.norm(dim=-1, keepdim=True)
+                    scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
+                    scaled_signal = scaled_signal / scale
+                if (
+                    self._allowed_update_layers is not None
+                    and idx not in self._allowed_update_layers
+                ):
+                    scaled_signal = None
+            if teach_signals is not None:
+                scaled_signal = teach_signals[idx] * self._runtime_teach_scale
+                block_surprise = float(scaled_signal.norm(dim=-1).mean().item())
                 if self._runtime_teach_clip > 0:
                     norm = scaled_signal.norm(dim=-1, keepdim=True)
                     scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
@@ -239,11 +295,12 @@ class HOPEModel(nn.Module):
                 blk=block,
                 sig=scaled_signal,
                 st=block_state,
+                sv=block_surprise,
             ) -> torch.Tensor:
                 return blk(
                     hidden,
                     teach_signal=sig,
-                    surprise_value=surprise_value,
+                    surprise_value=sv,
                     fast_state=st,
                 )
 
@@ -251,6 +308,10 @@ class HOPEModel(nn.Module):
                 x = checkpoint(block_call, x, use_reentrant=False)
             else:
                 x = block_call(x)
+            if collect_outputs:
+                block_outputs.append(x)
+        if collect_outputs:
+            return x, block_outputs
         return x
 
     def _gather_block_stats(self) -> Dict[str, float]:

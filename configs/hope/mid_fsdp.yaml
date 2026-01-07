@@ -10,6 +10,9 @@ data:
   num_workers: 6
 
 train:
+  online_updates: true
+  online_chunk_size: 0
+  per_layer_teach_signal: true
   steps: 250000
   log_interval: 20
   device: "cuda"

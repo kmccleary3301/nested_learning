@@ -65,6 +65,9 @@ data:
         weight: 0.1
 
 train:
+  online_updates: true
+  online_chunk_size: 0
+  per_layer_teach_signal: true
   steps: 60
   log_interval: 5
   device: "cuda"

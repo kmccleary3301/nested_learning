@@ -28,6 +28,7 @@ from .data import (
 from .levels import LevelSpec
 from .logging_utils import BaseLogger, NullLogger, init_logger
 from .model import HOPEModel, ModelConfig
+from .optim.m3 import M3
 from .titan.model import TitanOnlyModel, TitanOnlyModelConfig
 
 
@@ -229,6 +230,34 @@ def compute_teach_signal(
     return torch.cat([grad, pad], dim=1)
 
 
+def _compute_layer_teach_signals(
+    loss: torch.Tensor, block_outputs: list[torch.Tensor]
+) -> list[torch.Tensor]:
+    grads = torch.autograd.grad(
+        loss,
+        block_outputs,
+        retain_graph=True,
+        allow_unused=False,
+    )
+    return [g.detach() for g in grads]
+
+
+def _infer_online_chunk_size(model: HOPEModel) -> int | None:
+    min_period: int | None = None
+    blocks = getattr(model, "blocks", [])
+    for block in blocks:
+        cfg = getattr(block, "config", None)
+        levels = getattr(cfg, "cms_levels", None)
+        if not levels:
+            continue
+        for spec in levels:
+            period = int(spec.update_period)
+            if period <= 0:
+                continue
+            min_period = period if min_period is None else min(min_period, period)
+    return min_period
+
+
 class _HasLMHead(Protocol):
     lm_head: torch.nn.Linear
 
@@ -339,6 +368,15 @@ def run_training_loop(
     _log_run_features(logger, base_model, cfg, optimizer, device)
     steps = cfg.train.steps
     log_interval = cfg.train.get("log_interval", 1)
+    per_layer_teach = bool(cfg.train.get("per_layer_teach_signal", False))
+    online_updates = bool(cfg.train.get("online_updates", False))
+    online_chunk_size = int(cfg.train.get("online_chunk_size", 0) or 0)
+    if distributed and per_layer_teach:
+        print("[train] per_layer_teach_signal disabled under DDP (uses base model methods)")
+        per_layer_teach = False
+    if distributed and online_updates:
+        print("[train] online_updates disabled under DDP (uses base model methods)")
+        online_updates = False
     step_iter = iter(dataloader)
     epoch = 0
     metrics: Dict[str, float] = {}
@@ -353,26 +391,85 @@ def run_training_loop(
             batch = next(step_iter)
         tokens = batch.to(device)
         _apply_teach_schedule(base_model, cfg, step)
-        with autocast_factory():
-            logits = (
-                model(tokens)
-                if not isinstance(model, torch.nn.parallel.DistributedDataParallel)
-                else model(tokens)
-            )
-            loss = torch.nn.functional.cross_entropy(
-                logits[:, :-1].reshape(-1, logits.size(-1)), tokens[:, 1:].reshape(-1)
-            )
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(base_model.parameters(), max_norm=1.0)
-        optimizer.step()
         update_metrics: Dict[str, float] = {}
-        with torch.no_grad():
-            teach_signal = compute_teach_signal(base_model, logits, tokens)
-            teach_signal_norm = teach_signal.norm(dim=-1).mean().item()
-            base_model(tokens, teach_signal=teach_signal)
-            if hasattr(base_model, "pop_update_metrics"):
-                update_metrics = base_model.pop_update_metrics()
+        if online_updates and hasattr(base_model, "forward_with_block_outputs"):
+            total_loss = 0.0
+            total_tokens = 0
+            teach_signal_norm = 0.0
+            optimizer.zero_grad()
+            chunk_size = online_chunk_size
+            if chunk_size <= 0:
+                inferred = _infer_online_chunk_size(base_model)
+                chunk_size = inferred if inferred is not None else tokens.size(1)
+            for start in range(0, tokens.size(1), chunk_size):
+                end = min(start + chunk_size, tokens.size(1))
+                chunk_tokens = tokens[:, start:end]
+                if chunk_tokens.size(1) <= 1:
+                    continue
+                with autocast_factory():
+                    logits, _pre, block_outputs = base_model.forward_with_block_outputs(
+                        chunk_tokens
+                    )
+                    loss = torch.nn.functional.cross_entropy(
+                        logits[:, :-1].reshape(-1, logits.size(-1)),
+                        chunk_tokens[:, 1:].reshape(-1),
+                    )
+                if per_layer_teach:
+                    teach_signals = _compute_layer_teach_signals(loss, block_outputs)
+                    teach_signal_norm += float(
+                        torch.stack([sig.norm(dim=-1).mean() for sig in teach_signals]).mean()
+                    ) * (chunk_tokens.size(1) - 1)
+                else:
+                    teach_signal = compute_teach_signal(base_model, logits, chunk_tokens)
+                    teach_signal_norm += (
+                        teach_signal.norm(dim=-1).mean().item() * (chunk_tokens.size(1) - 1)
+                    )
+                loss.backward()
+                with torch.no_grad():
+                    if per_layer_teach:
+                        base_model(chunk_tokens, teach_signals=teach_signals)
+                    else:
+                        base_model(chunk_tokens, teach_signal=teach_signal)
+                    if hasattr(base_model, "pop_update_metrics"):
+                        update_metrics = base_model.pop_update_metrics()
+                total_loss += loss.item() * (chunk_tokens.size(1) - 1)
+                total_tokens += chunk_tokens.size(1) - 1
+            torch.nn.utils.clip_grad_norm_(base_model.parameters(), max_norm=1.0)
+            optimizer.step()
+            loss = torch.tensor(total_loss / max(total_tokens, 1), device=device)
+            teach_signal_norm = teach_signal_norm / max(total_tokens, 1)
+        else:
+            with autocast_factory():
+                if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
+                    logits, _pre, block_outputs = base_model.forward_with_block_outputs(tokens)
+                    loss = torch.nn.functional.cross_entropy(
+                        logits[:, :-1].reshape(-1, logits.size(-1)),
+                        tokens[:, 1:].reshape(-1),
+                    )
+                else:
+                    logits = model(tokens)
+                    loss = torch.nn.functional.cross_entropy(
+                        logits[:, :-1].reshape(-1, logits.size(-1)),
+                        tokens[:, 1:].reshape(-1),
+                    )
+            optimizer.zero_grad()
+            if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
+                teach_signals = _compute_layer_teach_signals(loss, block_outputs)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(base_model.parameters(), max_norm=1.0)
+            optimizer.step()
+            with torch.no_grad():
+                if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
+                    teach_signal_norm = float(
+                        torch.stack([sig.norm(dim=-1).mean() for sig in teach_signals]).mean()
+                    )
+                    base_model(tokens, teach_signals=teach_signals)
+                else:
+                    teach_signal = compute_teach_signal(base_model, logits, tokens)
+                    teach_signal_norm = teach_signal.norm(dim=-1).mean().item()
+                    base_model(tokens, teach_signal=teach_signal)
+                if hasattr(base_model, "pop_update_metrics"):
+                    update_metrics = base_model.pop_update_metrics()
         if step % log_interval == 0:
             ppl = torch.exp(loss.detach()).item()
             metrics_payload = {
@@ -473,6 +570,8 @@ def _build_optimizer(
     optim_type = str(optimizer_cfg.get("type", "adamw")).lower()
     if optim_type == "muon":
         return _build_muon_optimizer(model, optimizer_cfg, device=device)
+    if optim_type == "m3":
+        return _build_m3_optimizer(model, optimizer_cfg, device=device)
     lr = optimizer_cfg.get("lr", 1e-3)
     betas = optimizer_cfg.get("betas", (0.9, 0.999))
     weight_decay = optimizer_cfg.get("weight_decay", 0.0)
@@ -535,7 +634,76 @@ def _build_muon_optimizer(
     adamw_opt = torch.optim.AdamW(adamw_params, **adamw_kwargs) if adamw_params else None
     muon_elems = int(sum(p.numel() for p in muon_params))
     adamw_elems = int(sum(p.numel() for p in adamw_params))
-    return _HybridOptimizer(muon_opt, adamw_opt, muon_elems, adamw_elems)
+    return _HybridOptimizer(
+        muon_opt,
+        adamw_opt,
+        muon_elems,
+        adamw_elems,
+        primary_name="muon",
+    )
+
+
+def _build_m3_optimizer(
+    model: torch.nn.Module, optimizer_cfg: DictConfig, *, device: torch.device
+):
+    lr = optimizer_cfg.get("lr", 1e-3)
+    weight_decay = optimizer_cfg.get("weight_decay", 0.01)
+    beta1 = optimizer_cfg.get("beta1", 0.9)
+    beta2 = optimizer_cfg.get("beta2", 0.999)
+    beta3 = optimizer_cfg.get("beta3", 0.9)
+    alpha = optimizer_cfg.get("alpha", 1.0)
+    ns_steps = int(optimizer_cfg.get("ns_steps", 3))
+    slow_chunk = int(optimizer_cfg.get("slow_chunk", 100))
+    eps = optimizer_cfg.get("eps", 1e-8)
+    fused_cfg = optimizer_cfg.get("fused", "auto")
+    fused = False
+    if fused_cfg == "auto":
+        fused = device.type == "cuda" and torch.cuda.is_available()
+    else:
+        fused = bool(fused_cfg)
+
+    m3_params: list[torch.nn.Parameter] = []
+    adamw_params: list[torch.nn.Parameter] = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if _is_muon_candidate(name, param):
+            m3_params.append(param)
+        else:
+            adamw_params.append(param)
+    m3_opt = (
+        M3(
+            m3_params,
+            lr=lr,
+            beta1=beta1,
+            beta2=beta2,
+            beta3=beta3,
+            alpha=alpha,
+            eps=eps,
+            ns_steps=ns_steps,
+            slow_chunk=slow_chunk,
+            weight_decay=weight_decay,
+        )
+        if m3_params
+        else None
+    )
+    adamw_kwargs = {
+        "lr": lr,
+        "betas": optimizer_cfg.get("betas", (0.9, 0.999)),
+        "weight_decay": weight_decay,
+    }
+    if fused:
+        adamw_kwargs["fused"] = True
+    adamw_opt = torch.optim.AdamW(adamw_params, **adamw_kwargs) if adamw_params else None
+    m3_elems = int(sum(p.numel() for p in m3_params))
+    adamw_elems = int(sum(p.numel() for p in adamw_params))
+    return _HybridOptimizer(
+        m3_opt,
+        adamw_opt,
+        m3_elems,
+        adamw_elems,
+        primary_name="m3",
+    )
 
 
 def _is_muon_candidate(name: str, param: torch.nn.Parameter) -> bool:
@@ -550,53 +718,56 @@ def _is_muon_candidate(name: str, param: torch.nn.Parameter) -> bool:
 class _HybridOptimizer:
     def __init__(
         self,
-        muon_opt: torch.optim.Optimizer | None,
-        adamw_opt: torch.optim.Optimizer | None,
-        muon_param_elems: int,
-        adamw_param_elems: int,
+        primary_opt: torch.optim.Optimizer | None,
+        secondary_opt: torch.optim.Optimizer | None,
+        primary_param_elems: int,
+        secondary_param_elems: int,
+        *,
+        primary_name: str = "muon",
     ):
-        self.muon_opt = muon_opt
-        self.adamw_opt = adamw_opt
-        self.muon_param_elems = muon_param_elems
-        self.adamw_param_elems = adamw_param_elems
+        self.primary_opt = primary_opt
+        self.secondary_opt = secondary_opt
+        self.primary_param_elems = primary_param_elems
+        self.secondary_param_elems = secondary_param_elems
+        self.primary_name = primary_name
 
     def zero_grad(self) -> None:
-        if self.muon_opt:
-            self.muon_opt.zero_grad()
-        if self.adamw_opt:
-            self.adamw_opt.zero_grad()
+        if self.primary_opt:
+            self.primary_opt.zero_grad()
+        if self.secondary_opt:
+            self.secondary_opt.zero_grad()
 
     def step(self) -> None:
-        if self.muon_opt:
-            self.muon_opt.step()
-        if self.adamw_opt:
-            self.adamw_opt.step()
+        if self.primary_opt:
+            self.primary_opt.step()
+        if self.secondary_opt:
+            self.secondary_opt.step()
 
     def state_dict(self) -> dict:
         return {
-            "muon": self.muon_opt.state_dict() if self.muon_opt else None,
-            "adamw": self.adamw_opt.state_dict() if self.adamw_opt else None,
+            self.primary_name: self.primary_opt.state_dict() if self.primary_opt else None,
+            "adamw": self.secondary_opt.state_dict() if self.secondary_opt else None,
         }
 
     def load_state_dict(self, state: dict) -> None:
-        if self.muon_opt and state.get("muon") is not None:
-            self.muon_opt.load_state_dict(state["muon"])
-        if self.adamw_opt and state.get("adamw") is not None:
-            self.adamw_opt.load_state_dict(state["adamw"])
+        if self.primary_opt and state.get(self.primary_name) is not None:
+            self.primary_opt.load_state_dict(state[self.primary_name])
+        if self.secondary_opt and state.get("adamw") is not None:
+            self.secondary_opt.load_state_dict(state["adamw"])
 
     @property
     def param_groups(self):
         groups = []
-        if self.muon_opt:
-            groups.extend(self.muon_opt.param_groups)
-        if self.adamw_opt:
-            groups.extend(self.adamw_opt.param_groups)
+        if self.primary_opt:
+            groups.extend(self.primary_opt.param_groups)
+        if self.secondary_opt:
+            groups.extend(self.secondary_opt.param_groups)
         return groups
 
     def get_param_split(self) -> dict[str, int]:
         return {
-            "muon": self.muon_param_elems,
-            "adamw": self.adamw_param_elems,
+            self.primary_name: self.primary_param_elems,
+            "adamw": self.secondary_param_elems,
         }
 
 
@@ -620,8 +791,8 @@ def _log_run_features(
     split_fn = getattr(optimizer, "get_param_split", None)
     if callable(split_fn):
         split = split_fn()
-        features["optim.muon_param_elems"] = int(split.get("muon", 0))
-        features["optim.adamw_param_elems"] = int(split.get("adamw", 0))
+        for key, value in split.items():
+            features[f"optim.{key}_param_elems"] = int(value)
     logger.log(features, step=-1)
     print(f"[train] run_features {features}")
 

@@ -7,6 +7,9 @@ model:
   self_mod_momentum: 0.0
 
 train:
+  online_updates: true
+  online_chunk_size: 0
+  per_layer_teach_signal: true
   steps: 5000
   device: "cuda:1"
   checkpoint:

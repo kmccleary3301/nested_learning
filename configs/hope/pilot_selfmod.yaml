@@ -9,6 +9,9 @@ model:
   self_mod_chunk_size_memory: 64
 
 train:
+  online_updates: true
+  online_chunk_size: 0
+  per_layer_teach_signal: true
   checkpoint:
     dir: artifacts/checkpoints/pilot_selfmod
 

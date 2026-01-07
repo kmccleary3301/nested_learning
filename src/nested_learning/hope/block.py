@@ -18,6 +18,72 @@ from ..titan.self_modifying import SelfModifyingTitans, SelfModifyingTitansConfi
 from .self_mod import SelfModifier
 
 
+def _chunk_loss(
+    prediction: torch.Tensor,
+    delta_target: torch.Tensor,
+    mask_f: torch.Tensor,
+    *,
+    reduction: str,
+) -> torch.Tensor:
+    target = (prediction.detach() - delta_target).detach()
+    diff_sq = (prediction - target).pow(2)
+    masked = diff_sq * mask_f
+    if reduction == "mean":
+        return masked.sum() / mask_f.sum().clamp(min=1.0)
+    if reduction == "sum":
+        return masked.sum()
+    raise ValueError(f"Unsupported cms_chunk_reduction={reduction}")
+
+
+def _min_update_period(levels: Sequence[LevelSpec]) -> int:
+    periods = [int(spec.update_period) for spec in levels if int(spec.update_period) > 0]
+    return min(periods) if periods else 1
+
+
+@dataclass
+class _CmsBuffer:
+    inputs: list[torch.Tensor]
+    teach: list[torch.Tensor]
+    active: list[torch.Tensor]
+    count: int = 0
+
+
+def _pop_buffer_chunk(
+    buffer: _CmsBuffer,
+    count: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if count <= 0:
+        raise ValueError("count must be positive")
+    result_inputs: list[torch.Tensor] = []
+    result_teach: list[torch.Tensor] = []
+    result_active: list[torch.Tensor] = []
+    remaining = count
+    while remaining > 0:
+        first = buffer.inputs[0]
+        chunk_len = first.size(1)
+        take = min(remaining, chunk_len)
+        src_inputs = buffer.inputs[0]
+        src_teach = buffer.teach[0]
+        src_active = buffer.active[0]
+        result_inputs.append(src_inputs[:, :take])
+        result_teach.append(src_teach[:, :take])
+        result_active.append(src_active[:, :take])
+        if take == chunk_len:
+            buffer.inputs.pop(0)
+            buffer.teach.pop(0)
+            buffer.active.pop(0)
+        else:
+            buffer.inputs[0] = src_inputs[:, take:]
+            buffer.teach[0] = src_teach[:, take:]
+            buffer.active[0] = src_active[:, take:]
+        remaining -= take
+    return (
+        torch.cat(result_inputs, dim=1),
+        torch.cat(result_teach, dim=1),
+        torch.cat(result_active, dim=1),
+    )
+
+
 @dataclass
 class HOPEBlockConfig:
     dim: int
@@ -31,6 +97,8 @@ class HOPEBlockConfig:
     local_conv_window: int | None = None
     self_mod_hidden: int = 4
     self_mod_lr: float = 1e-3
+    cms_chunk_reduction: str = "sum"
+    cms_online_updates: bool = True
     optimizer_configs: Dict[str, dict] = field(default_factory=dict)
 
 
@@ -44,6 +112,8 @@ class HOPEAttentionBlockConfig:
     qk_l2_norm: bool = False
     local_conv_window: int | None = None
     self_mod_lr: float = 1e-3
+    cms_chunk_reduction: str = "sum"
+    cms_online_updates: bool = True
     optimizer_configs: Dict[str, dict] = field(default_factory=dict)
 
 
@@ -91,15 +161,23 @@ class HOPEAttentionBlock(nn.Module):
     ) -> torch.Tensor:
         attn_out = self.attn(x)
         if fast_state is None:
-            cms_result = self.cms(attn_out, return_intermediates=True)
-            cms_out, cms_inputs, cms_outputs = cms_result
-            if teach_signal is not None:
-                self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
+            if teach_signal is not None and self.config.cms_online_updates:
+                cms_out = self._cms_forward_online(attn_out, teach_signal, surprise_value)
+            else:
+                cms_result = self.cms(attn_out, return_intermediates=True)
+                cms_out, cms_inputs, cms_outputs = cms_result
+                if teach_signal is not None:
+                    self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
             self.level_manager.tick()
             return cms_out
-        cms_out, cms_inputs = self._cms_forward_fast(attn_out, fast_state)
-        if teach_signal is not None:
-            self._update_cms_fast(fast_state, cms_inputs, teach_signal, surprise_value)
+        if teach_signal is not None and self.config.cms_online_updates:
+            cms_out = self._cms_forward_online_fast(
+                attn_out, fast_state, teach_signal, surprise_value
+            )
+        else:
+            cms_out, cms_inputs = self._cms_forward_fast(attn_out, fast_state)
+            if teach_signal is not None:
+                self._update_cms_fast(fast_state, cms_inputs, teach_signal, surprise_value)
         fast_state.level_manager.tick()
         return cms_out
 
@@ -127,6 +205,133 @@ class HOPEAttentionBlock(nn.Module):
             params = fast_state.cms_params[level_name]
             current = call_with_params(self.cms.blocks[level_name], params, current)
         return current, inputs
+
+    def _cms_forward_online(
+        self,
+        x: torch.Tensor,
+        teach_signal: torch.Tensor,
+        surprise_value: float | None,
+    ) -> torch.Tensor:
+        seq_len = x.shape[1]
+        base_chunk = _min_update_period(self.config.cms_levels)
+        active_mask = teach_signal.detach().abs().sum(dim=-1) > 0
+        outputs: list[torch.Tensor] = []
+        stats: dict[str, Dict[str, float]] = {}
+        buffers: dict[str, _CmsBuffer] = {}
+        for spec in self.config.cms_levels:
+            buffers[spec.name] = _CmsBuffer(inputs=[], teach=[], active=[], count=0)
+            stats[spec.name] = {"grad_norm": 0.0, "chunk_tokens": 0.0, "gate_hit": 0.0}
+
+        for start in range(0, seq_len, base_chunk):
+            end = min(start + base_chunk, seq_len)
+            chunk_in = x[:, start:end, :]
+            chunk_teach = teach_signal[:, start:end, :]
+            chunk_active = active_mask[:, start:end]
+
+            current = chunk_in
+            level_inputs: dict[str, torch.Tensor] = {}
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                level_inputs[level_name] = current
+                current = self.cms.blocks[level_name](current)
+            outputs.append(current)
+
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                buffer.inputs.append(level_inputs[level_name].detach())
+                buffer.teach.append(chunk_teach)
+                buffer.active.append(chunk_active)
+                buffer.count += end - start
+                update_period = int(spec.update_period)
+                while update_period > 0 and buffer.count >= update_period:
+                    chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(
+                        buffer, update_period
+                    )
+                    buffer.count -= update_period
+                    magnitude = self._update_cms_chunk(
+                        level_name,
+                        chunk_inputs,
+                        chunk_teach,
+                        chunk_active,
+                        surprise_value,
+                    )
+                    if magnitude > 0:
+                        stats[level_name]["grad_norm"] += magnitude
+                        stats[level_name]["chunk_tokens"] += float(update_period)
+                        stats[level_name]["gate_hit"] += 1.0
+        for level_name, payload in stats.items():
+            if payload["gate_hit"] <= 0:
+                continue
+            if surprise_value is not None:
+                payload["surprise_value"] = surprise_value
+            self.last_update_stats[f"cms.{level_name}"] = payload
+        return torch.cat(outputs, dim=1)
+
+    def _cms_forward_online_fast(
+        self,
+        x: torch.Tensor,
+        fast_state: BlockFastState,
+        teach_signal: torch.Tensor,
+        surprise_value: float | None,
+    ) -> torch.Tensor:
+        seq_len = x.shape[1]
+        base_chunk = _min_update_period(self.config.cms_levels)
+        active_mask = teach_signal.detach().abs().sum(dim=-1) > 0
+        outputs: list[torch.Tensor] = []
+        stats: dict[str, Dict[str, float]] = {}
+        buffers: dict[str, _CmsBuffer] = {}
+        for spec in self.config.cms_levels:
+            buffers[spec.name] = _CmsBuffer(inputs=[], teach=[], active=[], count=0)
+            stats[spec.name] = {"grad_norm": 0.0, "chunk_tokens": 0.0, "gate_hit": 0.0}
+
+        for start in range(0, seq_len, base_chunk):
+            end = min(start + base_chunk, seq_len)
+            chunk_in = x[:, start:end, :]
+            chunk_teach = teach_signal[:, start:end, :]
+            chunk_active = active_mask[:, start:end]
+
+            current = chunk_in
+            level_inputs: dict[str, torch.Tensor] = {}
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                level_inputs[level_name] = current
+                params = fast_state.cms_params[level_name]
+                current = call_with_params(self.cms.blocks[level_name], params, current)
+            outputs.append(current)
+
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                buffer.inputs.append(level_inputs[level_name].detach())
+                buffer.teach.append(chunk_teach)
+                buffer.active.append(chunk_active)
+                buffer.count += end - start
+                update_period = int(spec.update_period)
+                while update_period > 0 and buffer.count >= update_period:
+                    chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(
+                        buffer, update_period
+                    )
+                    buffer.count -= update_period
+                    magnitude = self._update_cms_chunk_fast(
+                        fast_state,
+                        level_name,
+                        chunk_inputs,
+                        chunk_teach,
+                        chunk_active,
+                        surprise_value,
+                    )
+                    if magnitude > 0:
+                        stats[level_name]["grad_norm"] += magnitude
+                        stats[level_name]["chunk_tokens"] += float(update_period)
+                        stats[level_name]["gate_hit"] += 1.0
+        for level_name, payload in stats.items():
+            if payload["gate_hit"] <= 0:
+                continue
+            if surprise_value is not None:
+                payload["surprise_value"] = surprise_value
+            self.last_update_stats[f"cms.{level_name}"] = payload
+        return torch.cat(outputs, dim=1)
 
     def _update_cms_fast(
         self,
@@ -160,41 +365,17 @@ class HOPEAttentionBlock(nn.Module):
                 chunk_active = active_mask[:, start:end]
                 if not bool(chunk_active.any()):
                     continue
-                if chunk_size > 1:
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
-                    delta = (chunk_teach * mask_f).sum(dim=1, keepdim=True) / denom
-                    delta_target = delta.expand_as(chunk_inputs)
-                else:
-                    delta_target = chunk_teach
-                base_params = fast_state.cms_params[level_name]
-                params_req = require_grad_params(base_params)
-                with torch.enable_grad():
-                    prediction = call_with_params(
-                        self.cms.blocks[level_name], params_req, chunk_inputs
-                    )
-                    chunk_targets = (prediction.detach() - delta_target).detach()
-                    diff_sq = (prediction - chunk_targets).pow(2)
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
-                grads = torch.autograd.grad(
-                    loss,
-                    tuple(params_req.values()),
-                    retain_graph=False,
-                    allow_unused=True,
-                )
-                grads_dict = grads_to_dict(params_req, grads)
-                context_vec = chunk_inputs.mean(dim=(0, 1))
-                updated, magnitude = fast_state.level_manager.apply_grads(
+                magnitude = self._update_cms_chunk_fast(
+                    fast_state,
                     level_name,
-                    base_params,
-                    grads_dict,
-                    context=context_vec,
-                    force=True,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
                 )
-                fast_state.cms_params[level_name] = updated
+                if magnitude <= 0:
+                    continue
                 total_norm += magnitude
-                fast_state.level_manager.pop_last_metrics(level_name)
                 token_events += chunk_len
                 update_events += 1
             if update_events == 0:
@@ -257,28 +438,16 @@ class HOPEAttentionBlock(nn.Module):
                 chunk_active = active_mask[:, start:end]
                 if not bool(chunk_active.any()):
                     continue
-                if chunk_size > 1:
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
-                    delta = (chunk_teach * mask_f).sum(dim=1, keepdim=True) / denom
-                    delta_target = delta.expand_as(chunk_inputs)
-                else:
-                    delta_target = chunk_teach
-                with torch.enable_grad():
-                    prediction = self.cms.blocks[level_name](chunk_inputs)
-                    chunk_targets = (prediction.detach() - delta_target).detach()
-                    diff_sq = (prediction - chunk_targets).pow(2)
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
-                context_vec = chunk_inputs.mean(dim=(0, 1))
-                total_norm += self.level_manager.optimize(
+                magnitude = self._update_cms_chunk(
                     level_name,
-                    self.cms.blocks[level_name],
-                    loss,
-                    context=context_vec,
-                    force=True,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
                 )
-                self.level_manager.pop_last_metrics(level_name)
+                if magnitude <= 0:
+                    continue
+                total_norm += magnitude
                 token_events += chunk_len
                 update_events += 1
             if update_events == 0:
@@ -291,6 +460,83 @@ class HOPEAttentionBlock(nn.Module):
             if surprise_value is not None:
                 stats_payload["surprise_value"] = surprise_value
             self.last_update_stats[f"cms.{level_name}"] = stats_payload
+
+    def _update_cms_chunk(
+        self,
+        level_name: str,
+        chunk_inputs: torch.Tensor,
+        chunk_teach: torch.Tensor,
+        chunk_active: torch.Tensor,
+        surprise_value: float | None,
+    ) -> float:
+        if not self._is_level_allowed(level_name):
+            return 0.0
+        if not self._passes_surprise(surprise_value):
+            self._record_gate(level_name, hit=False)
+            return 0.0
+        mask_f = chunk_active.unsqueeze(-1).float()
+        with torch.enable_grad():
+            prediction = self.cms.blocks[level_name](chunk_inputs)
+            loss = _chunk_loss(
+                prediction,
+                chunk_teach,
+                mask_f,
+                reduction=self.config.cms_chunk_reduction,
+            )
+        context_vec = chunk_inputs.mean(dim=(0, 1))
+        magnitude = self.level_manager.optimize(
+            level_name,
+            self.cms.blocks[level_name],
+            loss,
+            context=context_vec,
+            force=True,
+        )
+        self.level_manager.pop_last_metrics(level_name)
+        return magnitude
+
+    def _update_cms_chunk_fast(
+        self,
+        fast_state: BlockFastState,
+        level_name: str,
+        chunk_inputs: torch.Tensor,
+        chunk_teach: torch.Tensor,
+        chunk_active: torch.Tensor,
+        surprise_value: float | None,
+    ) -> float:
+        if not self._is_level_allowed(level_name):
+            return 0.0
+        if not self._passes_surprise(surprise_value):
+            self._record_gate(level_name, hit=False)
+            return 0.0
+        mask_f = chunk_active.unsqueeze(-1).float()
+        base_params = fast_state.cms_params[level_name]
+        params_req = require_grad_params(base_params)
+        with torch.enable_grad():
+            prediction = call_with_params(self.cms.blocks[level_name], params_req, chunk_inputs)
+            loss = _chunk_loss(
+                prediction,
+                chunk_teach,
+                mask_f,
+                reduction=self.config.cms_chunk_reduction,
+            )
+        grads = torch.autograd.grad(
+            loss,
+            tuple(params_req.values()),
+            retain_graph=False,
+            allow_unused=True,
+        )
+        grads_dict = grads_to_dict(params_req, grads)
+        context_vec = chunk_inputs.mean(dim=(0, 1))
+        updated, magnitude = fast_state.level_manager.apply_grads(
+            level_name,
+            base_params,
+            grads_dict,
+            context=context_vec,
+            force=True,
+        )
+        fast_state.cms_params[level_name] = updated
+        fast_state.level_manager.pop_last_metrics(level_name)
+        return magnitude
 
 
 @dataclass
@@ -308,7 +554,10 @@ class HOPESelfModBlockConfig:
     selfmod_use_rank1_precond: bool = True
     selfmod_use_alpha: bool = True
     selfmod_momentum: float = 0.0
+    selfmod_online_updates: bool = True
     self_mod_lr: float = 1e-3
+    cms_chunk_reduction: str = "sum"
+    cms_online_updates: bool = True
     optimizer_configs: Dict[str, dict] = field(default_factory=dict)
 
 
@@ -361,23 +610,33 @@ class HOPESelfModBlock(nn.Module):
         fast_state: BlockFastState | None = None,
     ) -> torch.Tensor:
         if fast_state is None:
-            o = self.selfmod(x)
-            cms_out, cms_inputs, cms_outputs = self.cms(o, return_intermediates=True)
-            if teach_signal is not None:
-                self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
+            if self.config.selfmod_online_updates:
+                temp_state = self.selfmod.init_fast_state()
+                o, _ = self.selfmod.forward_with_updates(x, temp_state)
+            else:
+                o = self.selfmod(x)
+            if teach_signal is not None and self.config.cms_online_updates:
+                cms_out = self._cms_forward_online(o, teach_signal, surprise_value)
+            else:
+                cms_out, cms_inputs, cms_outputs = self.cms(o, return_intermediates=True)
+                if teach_signal is not None:
+                    self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
             self.level_manager.tick()
             return cms_out
 
         if fast_state.selfmod_state is None:
             raise ValueError("fast_state.selfmod_state is required for hope_selfmod variant")
-        if teach_signal is not None:
+        if self.config.selfmod_online_updates:
             o, updated = self.selfmod.forward_with_updates(x, fast_state.selfmod_state)
             fast_state.selfmod_state = updated
         else:
             o = self.selfmod.forward_with_state(x, fast_state.selfmod_state)
-        cms_out, cms_inputs = self._cms_forward_fast(o, fast_state)
-        if teach_signal is not None:
-            self._update_cms_fast(fast_state, cms_inputs, teach_signal, surprise_value)
+        if teach_signal is not None and self.config.cms_online_updates:
+            cms_out = self._cms_forward_online_fast(o, fast_state, teach_signal, surprise_value)
+        else:
+            cms_out, cms_inputs = self._cms_forward_fast(o, fast_state)
+            if teach_signal is not None:
+                self._update_cms_fast(fast_state, cms_inputs, teach_signal, surprise_value)
         fast_state.level_manager.tick()
         return cms_out
 
@@ -405,6 +664,133 @@ class HOPESelfModBlock(nn.Module):
             params = fast_state.cms_params[level_name]
             current = call_with_params(self.cms.blocks[level_name], params, current)
         return current, inputs
+
+    def _cms_forward_online(
+        self,
+        x: torch.Tensor,
+        teach_signal: torch.Tensor,
+        surprise_value: float | None,
+    ) -> torch.Tensor:
+        seq_len = x.shape[1]
+        base_chunk = _min_update_period(self.config.cms_levels)
+        active_mask = teach_signal.detach().abs().sum(dim=-1) > 0
+        outputs: list[torch.Tensor] = []
+        stats: dict[str, Dict[str, float]] = {}
+        buffers: dict[str, _CmsBuffer] = {}
+        for spec in self.config.cms_levels:
+            buffers[spec.name] = _CmsBuffer(inputs=[], teach=[], active=[], count=0)
+            stats[spec.name] = {"grad_norm": 0.0, "chunk_tokens": 0.0, "gate_hit": 0.0}
+
+        for start in range(0, seq_len, base_chunk):
+            end = min(start + base_chunk, seq_len)
+            chunk_in = x[:, start:end, :]
+            chunk_teach = teach_signal[:, start:end, :]
+            chunk_active = active_mask[:, start:end]
+
+            current = chunk_in
+            level_inputs: dict[str, torch.Tensor] = {}
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                level_inputs[level_name] = current
+                current = self.cms.blocks[level_name](current)
+            outputs.append(current)
+
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                buffer.inputs.append(level_inputs[level_name].detach())
+                buffer.teach.append(chunk_teach)
+                buffer.active.append(chunk_active)
+                buffer.count += end - start
+                update_period = int(spec.update_period)
+                while update_period > 0 and buffer.count >= update_period:
+                    chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(
+                        buffer, update_period
+                    )
+                    buffer.count -= update_period
+                    magnitude = self._update_cms_chunk(
+                        level_name,
+                        chunk_inputs,
+                        chunk_teach,
+                        chunk_active,
+                        surprise_value,
+                    )
+                    if magnitude > 0:
+                        stats[level_name]["grad_norm"] += magnitude
+                        stats[level_name]["chunk_tokens"] += float(update_period)
+                        stats[level_name]["gate_hit"] += 1.0
+        for level_name, payload in stats.items():
+            if payload["gate_hit"] <= 0:
+                continue
+            if surprise_value is not None:
+                payload["surprise_value"] = surprise_value
+            self.last_update_stats[f"cms.{level_name}"] = payload
+        return torch.cat(outputs, dim=1)
+
+    def _cms_forward_online_fast(
+        self,
+        x: torch.Tensor,
+        fast_state: BlockFastState,
+        teach_signal: torch.Tensor,
+        surprise_value: float | None,
+    ) -> torch.Tensor:
+        seq_len = x.shape[1]
+        base_chunk = _min_update_period(self.config.cms_levels)
+        active_mask = teach_signal.detach().abs().sum(dim=-1) > 0
+        outputs: list[torch.Tensor] = []
+        stats: dict[str, Dict[str, float]] = {}
+        buffers: dict[str, _CmsBuffer] = {}
+        for spec in self.config.cms_levels:
+            buffers[spec.name] = _CmsBuffer(inputs=[], teach=[], active=[], count=0)
+            stats[spec.name] = {"grad_norm": 0.0, "chunk_tokens": 0.0, "gate_hit": 0.0}
+
+        for start in range(0, seq_len, base_chunk):
+            end = min(start + base_chunk, seq_len)
+            chunk_in = x[:, start:end, :]
+            chunk_teach = teach_signal[:, start:end, :]
+            chunk_active = active_mask[:, start:end]
+
+            current = chunk_in
+            level_inputs: dict[str, torch.Tensor] = {}
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                level_inputs[level_name] = current
+                params = fast_state.cms_params[level_name]
+                current = call_with_params(self.cms.blocks[level_name], params, current)
+            outputs.append(current)
+
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                buffer.inputs.append(level_inputs[level_name].detach())
+                buffer.teach.append(chunk_teach)
+                buffer.active.append(chunk_active)
+                buffer.count += end - start
+                update_period = int(spec.update_period)
+                while update_period > 0 and buffer.count >= update_period:
+                    chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(
+                        buffer, update_period
+                    )
+                    buffer.count -= update_period
+                    magnitude = self._update_cms_chunk_fast(
+                        fast_state,
+                        level_name,
+                        chunk_inputs,
+                        chunk_teach,
+                        chunk_active,
+                        surprise_value,
+                    )
+                    if magnitude > 0:
+                        stats[level_name]["grad_norm"] += magnitude
+                        stats[level_name]["chunk_tokens"] += float(update_period)
+                        stats[level_name]["gate_hit"] += 1.0
+        for level_name, payload in stats.items():
+            if payload["gate_hit"] <= 0:
+                continue
+            if surprise_value is not None:
+                payload["surprise_value"] = surprise_value
+            self.last_update_stats[f"cms.{level_name}"] = payload
+        return torch.cat(outputs, dim=1)
 
     def _is_level_allowed(self, level_name: str) -> bool:
         if self.allowed_levels is None:
@@ -455,28 +841,16 @@ class HOPESelfModBlock(nn.Module):
                 chunk_active = active_mask[:, start:end]
                 if not bool(chunk_active.any()):
                     continue
-                if chunk_size > 1:
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
-                    delta = (chunk_teach * mask_f).sum(dim=1, keepdim=True) / denom
-                    delta_target = delta.expand_as(chunk_inputs)
-                else:
-                    delta_target = chunk_teach
-                with torch.enable_grad():
-                    prediction = self.cms.blocks[level_name](chunk_inputs)
-                    chunk_targets = (prediction.detach() - delta_target).detach()
-                    diff_sq = (prediction - chunk_targets).pow(2)
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
-                context_vec = chunk_inputs.mean(dim=(0, 1))
-                total_norm += self.level_manager.optimize(
+                magnitude = self._update_cms_chunk(
                     level_name,
-                    self.cms.blocks[level_name],
-                    loss,
-                    context=context_vec,
-                    force=True,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
                 )
-                self.level_manager.pop_last_metrics(level_name)
+                if magnitude <= 0:
+                    continue
+                total_norm += magnitude
                 token_events += chunk_len
                 update_events += 1
             if update_events == 0:
@@ -522,41 +896,17 @@ class HOPESelfModBlock(nn.Module):
                 chunk_active = active_mask[:, start:end]
                 if not bool(chunk_active.any()):
                     continue
-                if chunk_size > 1:
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
-                    delta = (chunk_teach * mask_f).sum(dim=1, keepdim=True) / denom
-                    delta_target = delta.expand_as(chunk_inputs)
-                else:
-                    delta_target = chunk_teach
-                base_params = fast_state.cms_params[level_name]
-                params_req = require_grad_params(base_params)
-                with torch.enable_grad():
-                    prediction = call_with_params(
-                        self.cms.blocks[level_name], params_req, chunk_inputs
-                    )
-                    chunk_targets = (prediction.detach() - delta_target).detach()
-                    diff_sq = (prediction - chunk_targets).pow(2)
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
-                grads = torch.autograd.grad(
-                    loss,
-                    tuple(params_req.values()),
-                    retain_graph=False,
-                    allow_unused=True,
-                )
-                grads_dict = grads_to_dict(params_req, grads)
-                context_vec = chunk_inputs.mean(dim=(0, 1))
-                updated, magnitude = fast_state.level_manager.apply_grads(
+                magnitude = self._update_cms_chunk_fast(
+                    fast_state,
                     level_name,
-                    base_params,
-                    grads_dict,
-                    context=context_vec,
-                    force=True,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
                 )
-                fast_state.cms_params[level_name] = updated
+                if magnitude <= 0:
+                    continue
                 total_norm += magnitude
-                fast_state.level_manager.pop_last_metrics(level_name)
                 token_events += chunk_len
                 update_events += 1
             if update_events == 0:
@@ -569,6 +919,83 @@ class HOPESelfModBlock(nn.Module):
             if surprise_value is not None:
                 stats_payload["surprise_value"] = surprise_value
             self.last_update_stats[f"cms.{level_name}"] = stats_payload
+
+    def _update_cms_chunk(
+        self,
+        level_name: str,
+        chunk_inputs: torch.Tensor,
+        chunk_teach: torch.Tensor,
+        chunk_active: torch.Tensor,
+        surprise_value: float | None,
+    ) -> float:
+        if not self._is_level_allowed(level_name):
+            return 0.0
+        if not self._passes_surprise(surprise_value):
+            self._record_gate(level_name, hit=False)
+            return 0.0
+        mask_f = chunk_active.unsqueeze(-1).float()
+        with torch.enable_grad():
+            prediction = self.cms.blocks[level_name](chunk_inputs)
+            loss = _chunk_loss(
+                prediction,
+                chunk_teach,
+                mask_f,
+                reduction=self.config.cms_chunk_reduction,
+            )
+        context_vec = chunk_inputs.mean(dim=(0, 1))
+        magnitude = self.level_manager.optimize(
+            level_name,
+            self.cms.blocks[level_name],
+            loss,
+            context=context_vec,
+            force=True,
+        )
+        self.level_manager.pop_last_metrics(level_name)
+        return magnitude
+
+    def _update_cms_chunk_fast(
+        self,
+        fast_state: BlockFastState,
+        level_name: str,
+        chunk_inputs: torch.Tensor,
+        chunk_teach: torch.Tensor,
+        chunk_active: torch.Tensor,
+        surprise_value: float | None,
+    ) -> float:
+        if not self._is_level_allowed(level_name):
+            return 0.0
+        if not self._passes_surprise(surprise_value):
+            self._record_gate(level_name, hit=False)
+            return 0.0
+        mask_f = chunk_active.unsqueeze(-1).float()
+        base_params = fast_state.cms_params[level_name]
+        params_req = require_grad_params(base_params)
+        with torch.enable_grad():
+            prediction = call_with_params(self.cms.blocks[level_name], params_req, chunk_inputs)
+            loss = _chunk_loss(
+                prediction,
+                chunk_teach,
+                mask_f,
+                reduction=self.config.cms_chunk_reduction,
+            )
+        grads = torch.autograd.grad(
+            loss,
+            tuple(params_req.values()),
+            retain_graph=False,
+            allow_unused=True,
+        )
+        grads_dict = grads_to_dict(params_req, grads)
+        context_vec = chunk_inputs.mean(dim=(0, 1))
+        updated, magnitude = fast_state.level_manager.apply_grads(
+            level_name,
+            base_params,
+            grads_dict,
+            context=context_vec,
+            force=True,
+        )
+        fast_state.cms_params[level_name] = updated
+        fast_state.level_manager.pop_last_metrics(level_name)
+        return magnitude
 
 
 class HOPEBlock(nn.Module):
@@ -620,11 +1047,15 @@ class HOPEBlock(nn.Module):
         if fast_state is None:
             mem_out = self.titan_memory(attn_out)
             combined = attn_out + mem_out
-            cms_result = self.cms(combined, return_intermediates=True)
-            cms_out, cms_inputs, cms_outputs = cms_result
-            if teach_signal is not None:
+            if teach_signal is not None and self.config.cms_online_updates:
+                cms_out = self._cms_forward_online(combined, teach_signal, surprise_value)
                 self._update_titan(attn_out, mem_out, teach_signal, surprise_value)
-                self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
+            else:
+                cms_result = self.cms(combined, return_intermediates=True)
+                cms_out, cms_inputs, cms_outputs = cms_result
+                if teach_signal is not None:
+                    self._update_titan(attn_out, mem_out, teach_signal, surprise_value)
+                    self._update_cms(cms_inputs, cms_outputs, teach_signal, surprise_value)
             self.level_manager.tick()
             return cms_out
 
@@ -632,10 +1063,16 @@ class HOPEBlock(nn.Module):
             raise ValueError("fast_state.titan_params is required for HOPEBlock fast-state forward")
         mem_out = call_with_params(self.titan_memory, fast_state.titan_params, attn_out)
         combined = attn_out + mem_out
-        cms_out, cms_inputs = self._cms_forward_fast(combined, fast_state)
-        if teach_signal is not None:
+        if teach_signal is not None and self.config.cms_online_updates:
+            cms_out = self._cms_forward_online_fast(
+                combined, fast_state, teach_signal, surprise_value
+            )
             self._update_titan_fast(fast_state, attn_out, mem_out, teach_signal, surprise_value)
-            self._update_cms_fast(fast_state, cms_inputs, teach_signal, surprise_value)
+        else:
+            cms_out, cms_inputs = self._cms_forward_fast(combined, fast_state)
+            if teach_signal is not None:
+                self._update_titan_fast(fast_state, attn_out, mem_out, teach_signal, surprise_value)
+                self._update_cms_fast(fast_state, cms_inputs, teach_signal, surprise_value)
         fast_state.level_manager.tick()
         return cms_out
 
@@ -659,6 +1096,133 @@ class HOPEBlock(nn.Module):
             current = call_with_params(self.cms.blocks[level_name], params, current)
         return current, inputs
 
+
+    def _cms_forward_online(
+        self,
+        x: torch.Tensor,
+        teach_signal: torch.Tensor,
+        surprise_value: float | None,
+    ) -> torch.Tensor:
+        seq_len = x.shape[1]
+        base_chunk = _min_update_period(self.config.cms_levels)
+        active_mask = teach_signal.detach().abs().sum(dim=-1) > 0
+        outputs: list[torch.Tensor] = []
+        stats: dict[str, Dict[str, float]] = {}
+        buffers: dict[str, _CmsBuffer] = {}
+        for spec in self.config.cms_levels:
+            buffers[spec.name] = _CmsBuffer(inputs=[], teach=[], active=[], count=0)
+            stats[spec.name] = {"grad_norm": 0.0, "chunk_tokens": 0.0, "gate_hit": 0.0}
+
+        for start in range(0, seq_len, base_chunk):
+            end = min(start + base_chunk, seq_len)
+            chunk_in = x[:, start:end, :]
+            chunk_teach = teach_signal[:, start:end, :]
+            chunk_active = active_mask[:, start:end]
+
+            current = chunk_in
+            level_inputs: dict[str, torch.Tensor] = {}
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                level_inputs[level_name] = current
+                current = self.cms.blocks[level_name](current)
+            outputs.append(current)
+
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                buffer.inputs.append(level_inputs[level_name].detach())
+                buffer.teach.append(chunk_teach)
+                buffer.active.append(chunk_active)
+                buffer.count += end - start
+                update_period = int(spec.update_period)
+                while update_period > 0 and buffer.count >= update_period:
+                    chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(
+                        buffer, update_period
+                    )
+                    buffer.count -= update_period
+                    magnitude = self._update_cms_chunk(
+                        level_name,
+                        chunk_inputs,
+                        chunk_teach,
+                        chunk_active,
+                        surprise_value,
+                    )
+                    if magnitude > 0:
+                        stats[level_name]["grad_norm"] += magnitude
+                        stats[level_name]["chunk_tokens"] += float(update_period)
+                        stats[level_name]["gate_hit"] += 1.0
+        for level_name, payload in stats.items():
+            if payload["gate_hit"] <= 0:
+                continue
+            if surprise_value is not None:
+                payload["surprise_value"] = surprise_value
+            self.last_update_stats[f"cms.{level_name}"] = payload
+        return torch.cat(outputs, dim=1)
+
+    def _cms_forward_online_fast(
+        self,
+        x: torch.Tensor,
+        fast_state: BlockFastState,
+        teach_signal: torch.Tensor,
+        surprise_value: float | None,
+    ) -> torch.Tensor:
+        seq_len = x.shape[1]
+        base_chunk = _min_update_period(self.config.cms_levels)
+        active_mask = teach_signal.detach().abs().sum(dim=-1) > 0
+        outputs: list[torch.Tensor] = []
+        stats: dict[str, Dict[str, float]] = {}
+        buffers: dict[str, _CmsBuffer] = {}
+        for spec in self.config.cms_levels:
+            buffers[spec.name] = _CmsBuffer(inputs=[], teach=[], active=[], count=0)
+            stats[spec.name] = {"grad_norm": 0.0, "chunk_tokens": 0.0, "gate_hit": 0.0}
+
+        for start in range(0, seq_len, base_chunk):
+            end = min(start + base_chunk, seq_len)
+            chunk_in = x[:, start:end, :]
+            chunk_teach = teach_signal[:, start:end, :]
+            chunk_active = active_mask[:, start:end]
+
+            current = chunk_in
+            level_inputs: dict[str, torch.Tensor] = {}
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                level_inputs[level_name] = current
+                params = fast_state.cms_params[level_name]
+                current = call_with_params(self.cms.blocks[level_name], params, current)
+            outputs.append(current)
+
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                buffer.inputs.append(level_inputs[level_name].detach())
+                buffer.teach.append(chunk_teach)
+                buffer.active.append(chunk_active)
+                buffer.count += end - start
+                update_period = int(spec.update_period)
+                while update_period > 0 and buffer.count >= update_period:
+                    chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(
+                        buffer, update_period
+                    )
+                    buffer.count -= update_period
+                    magnitude = self._update_cms_chunk_fast(
+                        fast_state,
+                        level_name,
+                        chunk_inputs,
+                        chunk_teach,
+                        chunk_active,
+                        surprise_value,
+                    )
+                    if magnitude > 0:
+                        stats[level_name]["grad_norm"] += magnitude
+                        stats[level_name]["chunk_tokens"] += float(update_period)
+                        stats[level_name]["gate_hit"] += 1.0
+        for level_name, payload in stats.items():
+            if payload["gate_hit"] <= 0:
+                continue
+            if surprise_value is not None:
+                payload["surprise_value"] = surprise_value
+            self.last_update_stats[f"cms.{level_name}"] = payload
+        return torch.cat(outputs, dim=1)
     def _update_titan(
         self,
         attn_out: torch.Tensor,
@@ -797,28 +1361,16 @@ class HOPEBlock(nn.Module):
                 chunk_active = active_mask[:, start:end]
                 if not bool(chunk_active.any()):
                     continue
-                if chunk_size > 1:
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
-                    delta = (chunk_teach * mask_f).sum(dim=1, keepdim=True) / denom
-                    delta_target = delta.expand_as(chunk_inputs)
-                else:
-                    delta_target = chunk_teach
-                with torch.enable_grad():
-                    prediction = self.cms.blocks[level_name](chunk_inputs)
-                    chunk_targets = (prediction.detach() - delta_target).detach()
-                    diff_sq = (prediction - chunk_targets).pow(2)
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
-                context_vec = chunk_inputs.mean(dim=(0, 1))
-                total_norm += self.level_manager.optimize(
+                magnitude = self._update_cms_chunk(
                     level_name,
-                    self.cms.blocks[level_name],
-                    loss,
-                    context=context_vec,
-                    force=True,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
                 )
-                self.level_manager.pop_last_metrics(level_name)
+                if magnitude <= 0:
+                    continue
+                total_norm += magnitude
                 token_events += chunk_len
                 update_events += 1
             if update_events == 0:
@@ -864,41 +1416,17 @@ class HOPEBlock(nn.Module):
                 chunk_active = active_mask[:, start:end]
                 if not bool(chunk_active.any()):
                     continue
-                if chunk_size > 1:
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
-                    delta = (chunk_teach * mask_f).sum(dim=1, keepdim=True) / denom
-                    delta_target = delta.expand_as(chunk_inputs)
-                else:
-                    delta_target = chunk_teach
-                base_params = fast_state.cms_params[level_name]
-                params_req = require_grad_params(base_params)
-                with torch.enable_grad():
-                    prediction = call_with_params(
-                        self.cms.blocks[level_name], params_req, chunk_inputs
-                    )
-                    chunk_targets = (prediction.detach() - delta_target).detach()
-                    diff_sq = (prediction - chunk_targets).pow(2)
-                    mask_f = chunk_active.unsqueeze(-1).float()
-                    loss = (diff_sq * mask_f).sum() / mask_f.sum().clamp(min=1.0)
-                grads = torch.autograd.grad(
-                    loss,
-                    tuple(params_req.values()),
-                    retain_graph=False,
-                    allow_unused=True,
-                )
-                grads_dict = grads_to_dict(params_req, grads)
-                context_vec = chunk_inputs.mean(dim=(0, 1))
-                updated, magnitude = fast_state.level_manager.apply_grads(
+                magnitude = self._update_cms_chunk_fast(
+                    fast_state,
                     level_name,
-                    base_params,
-                    grads_dict,
-                    context=context_vec,
-                    force=True,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
                 )
-                fast_state.cms_params[level_name] = updated
+                if magnitude <= 0:
+                    continue
                 total_norm += magnitude
-                fast_state.level_manager.pop_last_metrics(level_name)
                 token_events += chunk_len
                 update_events += 1
             if update_events == 0:
@@ -911,6 +1439,83 @@ class HOPEBlock(nn.Module):
             if surprise_value is not None:
                 stats_payload["surprise_value"] = surprise_value
             self.last_update_stats[f"cms.{level_name}"] = stats_payload
+
+    def _update_cms_chunk(
+        self,
+        level_name: str,
+        chunk_inputs: torch.Tensor,
+        chunk_teach: torch.Tensor,
+        chunk_active: torch.Tensor,
+        surprise_value: float | None,
+    ) -> float:
+        if not self._is_level_allowed(level_name):
+            return 0.0
+        if not self._passes_surprise(surprise_value):
+            self._record_gate(level_name, hit=False)
+            return 0.0
+        mask_f = chunk_active.unsqueeze(-1).float()
+        with torch.enable_grad():
+            prediction = self.cms.blocks[level_name](chunk_inputs)
+            loss = _chunk_loss(
+                prediction,
+                chunk_teach,
+                mask_f,
+                reduction=self.config.cms_chunk_reduction,
+            )
+        context_vec = chunk_inputs.mean(dim=(0, 1))
+        magnitude = self.level_manager.optimize(
+            level_name,
+            self.cms.blocks[level_name],
+            loss,
+            context=context_vec,
+            force=True,
+        )
+        self.level_manager.pop_last_metrics(level_name)
+        return magnitude
+
+    def _update_cms_chunk_fast(
+        self,
+        fast_state: BlockFastState,
+        level_name: str,
+        chunk_inputs: torch.Tensor,
+        chunk_teach: torch.Tensor,
+        chunk_active: torch.Tensor,
+        surprise_value: float | None,
+    ) -> float:
+        if not self._is_level_allowed(level_name):
+            return 0.0
+        if not self._passes_surprise(surprise_value):
+            self._record_gate(level_name, hit=False)
+            return 0.0
+        mask_f = chunk_active.unsqueeze(-1).float()
+        base_params = fast_state.cms_params[level_name]
+        params_req = require_grad_params(base_params)
+        with torch.enable_grad():
+            prediction = call_with_params(self.cms.blocks[level_name], params_req, chunk_inputs)
+            loss = _chunk_loss(
+                prediction,
+                chunk_teach,
+                mask_f,
+                reduction=self.config.cms_chunk_reduction,
+            )
+        grads = torch.autograd.grad(
+            loss,
+            tuple(params_req.values()),
+            retain_graph=False,
+            allow_unused=True,
+        )
+        grads_dict = grads_to_dict(params_req, grads)
+        context_vec = chunk_inputs.mean(dim=(0, 1))
+        updated, magnitude = fast_state.level_manager.apply_grads(
+            level_name,
+            base_params,
+            grads_dict,
+            context=context_vec,
+            force=True,
+        )
+        fast_state.cms_params[level_name] = updated
+        fast_state.level_manager.pop_last_metrics(level_name)
+        return magnitude
 
     def pop_update_stats(self) -> Dict[str, Dict[str, float]]:
         stats = self.last_update_stats
