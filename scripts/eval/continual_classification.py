@@ -20,6 +20,7 @@ from nested_learning.continual_streaming import (
     build_streaming_tasks,
     evaluate_continual_classification,
 )
+from nested_learning.device import resolve_device
 from nested_learning.memorize import MemorizeConfig
 from nested_learning.tokenizer import SentencePieceTokenizer
 from nested_learning.training import build_model_from_cfg, unwrap_config
@@ -91,7 +92,7 @@ def main(
         ),
     ),
 ) -> None:
-    torch_device = torch.device(device)
+    torch_device = resolve_device(device)
     cfg = OmegaConf.load(config)
     cfg = unwrap_config(cfg)
     model = build_model_from_cfg(cfg.model)

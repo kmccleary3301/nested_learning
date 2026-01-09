@@ -8,7 +8,13 @@ import torch.nn as nn
 
 from ..backbones import AttentionConfig, SelfAttention
 from ..fast_state import BlockFastState, ModelFastState, build_block_fast_state
-from ..functional import call_with_params, grads_to_dict, require_grad_params
+from ..functional import (
+    call_with_deltas,
+    call_with_params,
+    grads_to_dict,
+    params_with_deltas,
+    require_grad_params,
+)
 from ..hope.self_mod import SelfModifier
 from ..levels import LevelSpec
 from ..optim.manager import LevelConfig, LevelOptimizerManager
@@ -81,7 +87,7 @@ class TitanOnlyBlock(nn.Module):
                 raise ValueError(
                     "fast_state.titan_params is required for TitanOnlyBlock fast-state forward"
                 )
-            mem_out = call_with_params(self.titan_memory, fast_state.titan_params, attn_out)
+            mem_out = call_with_deltas(self.titan_memory, fast_state.titan_params, attn_out)
         combined = attn_out + mem_out
         if teach_signal is not None:
             if fast_state is None:
@@ -164,7 +170,8 @@ class TitanOnlyBlock(nn.Module):
         )
         context_vec = attn_out.detach().mean(dim=(0, 1))
         base_params = fast_state.titan_params
-        params_req = require_grad_params(base_params)
+        forward_params = params_with_deltas(self.titan_memory, base_params)
+        params_req = require_grad_params(forward_params)
         with torch.enable_grad():
             query = attn_out.detach()
             target = (teach_signal.detach() + modifier).detach()

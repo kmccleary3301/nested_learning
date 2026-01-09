@@ -10,7 +10,13 @@ import torch.nn.functional as F
 from ..backbones import AttentionConfig, SelfAttention
 from ..cms import CMS
 from ..fast_state import BlockFastState
-from ..functional import call_with_params, grads_to_dict, require_grad_params
+from ..functional import (
+    call_with_deltas,
+    call_with_params,
+    grads_to_dict,
+    params_with_deltas,
+    require_grad_params,
+)
 from ..levels import LevelSpec
 from ..optim.manager import LevelConfig, LevelOptimizerManager
 from ..titan.memory import TitanMemory, TitanMemoryConfig
@@ -99,6 +105,7 @@ class HOPEBlockConfig:
     self_mod_lr: float = 1e-3
     cms_chunk_reduction: str = "sum"
     cms_online_updates: bool = True
+    cms_flush_partial_at_end: bool = False
     optimizer_configs: Dict[str, dict] = field(default_factory=dict)
 
 
@@ -114,6 +121,7 @@ class HOPEAttentionBlockConfig:
     self_mod_lr: float = 1e-3
     cms_chunk_reduction: str = "sum"
     cms_online_updates: bool = True
+    cms_flush_partial_at_end: bool = False
     optimizer_configs: Dict[str, dict] = field(default_factory=dict)
 
 
@@ -203,7 +211,7 @@ class HOPEAttentionBlock(nn.Module):
             level_name = spec.name
             inputs[level_name] = current
             params = fast_state.cms_params[level_name]
-            current = call_with_params(self.cms.blocks[level_name], params, current)
+            current = call_with_deltas(self.cms.blocks[level_name], params, current)
         return current, inputs
 
     def _cms_forward_online(
@@ -260,6 +268,28 @@ class HOPEAttentionBlock(nn.Module):
                         stats[level_name]["grad_norm"] += magnitude
                         stats[level_name]["chunk_tokens"] += float(update_period)
                         stats[level_name]["gate_hit"] += 1.0
+        if self.config.cms_flush_partial_at_end:
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                remaining = int(buffer.count)
+                if remaining <= 0:
+                    continue
+                chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(buffer, remaining)
+                buffer.count -= remaining
+                if not bool(chunk_active.any()):
+                    continue
+                magnitude = self._update_cms_chunk(
+                    level_name,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
+                )
+                if magnitude > 0:
+                    stats[level_name]["grad_norm"] += magnitude
+                    stats[level_name]["chunk_tokens"] += float(remaining)
+                    stats[level_name]["gate_hit"] += 1.0
         for level_name, payload in stats.items():
             if payload["gate_hit"] <= 0:
                 continue
@@ -297,7 +327,7 @@ class HOPEAttentionBlock(nn.Module):
                 level_name = spec.name
                 level_inputs[level_name] = current
                 params = fast_state.cms_params[level_name]
-                current = call_with_params(self.cms.blocks[level_name], params, current)
+                current = call_with_deltas(self.cms.blocks[level_name], params, current)
             outputs.append(current)
 
             for spec in self.config.cms_levels:
@@ -325,6 +355,29 @@ class HOPEAttentionBlock(nn.Module):
                         stats[level_name]["grad_norm"] += magnitude
                         stats[level_name]["chunk_tokens"] += float(update_period)
                         stats[level_name]["gate_hit"] += 1.0
+        if self.config.cms_flush_partial_at_end:
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                remaining = int(buffer.count)
+                if remaining <= 0:
+                    continue
+                chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(buffer, remaining)
+                buffer.count -= remaining
+                if not bool(chunk_active.any()):
+                    continue
+                magnitude = self._update_cms_chunk_fast(
+                    fast_state,
+                    level_name,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
+                )
+                if magnitude > 0:
+                    stats[level_name]["grad_norm"] += magnitude
+                    stats[level_name]["chunk_tokens"] += float(remaining)
+                    stats[level_name]["gate_hit"] += 1.0
         for level_name, payload in stats.items():
             if payload["gate_hit"] <= 0:
                 continue
@@ -510,7 +563,8 @@ class HOPEAttentionBlock(nn.Module):
             return 0.0
         mask_f = chunk_active.unsqueeze(-1).float()
         base_params = fast_state.cms_params[level_name]
-        params_req = require_grad_params(base_params)
+        forward_params = params_with_deltas(self.cms.blocks[level_name], base_params)
+        params_req = require_grad_params(forward_params)
         with torch.enable_grad():
             prediction = call_with_params(self.cms.blocks[level_name], params_req, chunk_inputs)
             loss = _chunk_loss(
@@ -546,6 +600,9 @@ class HOPESelfModBlockConfig:
     cms_hidden_multiplier: int = 4
     activation: str = "gelu"
     qk_l2_norm: bool = True
+    cms_flush_partial_at_end: bool = False
+    selfmod_adaptive_q: bool = False
+    selfmod_local_conv_window: int | None = 4
     eta_scale: float = 1e-3
     selfmod_chunk_size: int = 1
     selfmod_chunk_size_memory: int | None = None
@@ -553,6 +610,7 @@ class HOPESelfModBlockConfig:
     selfmod_stopgrad_vhat: bool = True
     selfmod_use_rank1_precond: bool = True
     selfmod_use_alpha: bool = True
+    selfmod_use_skip: bool = True
     selfmod_momentum: float = 0.0
     selfmod_online_updates: bool = True
     self_mod_lr: float = 1e-3
@@ -584,8 +642,11 @@ class HOPESelfModBlock(nn.Module):
                 stopgrad_vhat=config.selfmod_stopgrad_vhat,
                 use_rank1_precond=config.selfmod_use_rank1_precond,
                 use_alpha=config.selfmod_use_alpha,
+                use_skip=config.selfmod_use_skip,
                 momentum=config.selfmod_momentum,
                 qk_l2_norm=config.qk_l2_norm,
+                adaptive_q=config.selfmod_adaptive_q,
+                local_conv_window=config.selfmod_local_conv_window,
             )
         )
         self.cms = CMS(
@@ -610,11 +671,11 @@ class HOPESelfModBlock(nn.Module):
         fast_state: BlockFastState | None = None,
     ) -> torch.Tensor:
         if fast_state is None:
-            if self.config.selfmod_online_updates:
-                temp_state = self.selfmod.init_fast_state()
-                o, _ = self.selfmod.forward_with_updates(x, temp_state)
-            else:
-                o = self.selfmod(x)
+            # Differentiable read path (used for the outer loss).
+            o = self.selfmod(x)
+            # Explicit update pass (typically called under `torch.no_grad()` after backward).
+            if teach_signal is not None and self.config.selfmod_online_updates:
+                self.selfmod.apply_updates_inplace(x)
             if teach_signal is not None and self.config.cms_online_updates:
                 cms_out = self._cms_forward_online(o, teach_signal, surprise_value)
             else:
@@ -626,7 +687,7 @@ class HOPESelfModBlock(nn.Module):
 
         if fast_state.selfmod_state is None:
             raise ValueError("fast_state.selfmod_state is required for hope_selfmod variant")
-        if self.config.selfmod_online_updates:
+        if self.config.selfmod_online_updates and teach_signal is not None:
             o, updated = self.selfmod.forward_with_updates(x, fast_state.selfmod_state)
             fast_state.selfmod_state = updated
         else:
@@ -662,7 +723,7 @@ class HOPESelfModBlock(nn.Module):
             level_name = spec.name
             inputs[level_name] = current
             params = fast_state.cms_params[level_name]
-            current = call_with_params(self.cms.blocks[level_name], params, current)
+            current = call_with_deltas(self.cms.blocks[level_name], params, current)
         return current, inputs
 
     def _cms_forward_online(
@@ -719,6 +780,28 @@ class HOPESelfModBlock(nn.Module):
                         stats[level_name]["grad_norm"] += magnitude
                         stats[level_name]["chunk_tokens"] += float(update_period)
                         stats[level_name]["gate_hit"] += 1.0
+        if self.config.cms_flush_partial_at_end:
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                remaining = int(buffer.count)
+                if remaining <= 0:
+                    continue
+                chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(buffer, remaining)
+                buffer.count -= remaining
+                if not bool(chunk_active.any()):
+                    continue
+                magnitude = self._update_cms_chunk(
+                    level_name,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
+                )
+                if magnitude > 0:
+                    stats[level_name]["grad_norm"] += magnitude
+                    stats[level_name]["chunk_tokens"] += float(remaining)
+                    stats[level_name]["gate_hit"] += 1.0
         for level_name, payload in stats.items():
             if payload["gate_hit"] <= 0:
                 continue
@@ -756,7 +839,7 @@ class HOPESelfModBlock(nn.Module):
                 level_name = spec.name
                 level_inputs[level_name] = current
                 params = fast_state.cms_params[level_name]
-                current = call_with_params(self.cms.blocks[level_name], params, current)
+                current = call_with_deltas(self.cms.blocks[level_name], params, current)
             outputs.append(current)
 
             for spec in self.config.cms_levels:
@@ -784,6 +867,29 @@ class HOPESelfModBlock(nn.Module):
                         stats[level_name]["grad_norm"] += magnitude
                         stats[level_name]["chunk_tokens"] += float(update_period)
                         stats[level_name]["gate_hit"] += 1.0
+        if self.config.cms_flush_partial_at_end:
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                remaining = int(buffer.count)
+                if remaining <= 0:
+                    continue
+                chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(buffer, remaining)
+                buffer.count -= remaining
+                if not bool(chunk_active.any()):
+                    continue
+                magnitude = self._update_cms_chunk_fast(
+                    fast_state,
+                    level_name,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
+                )
+                if magnitude > 0:
+                    stats[level_name]["grad_norm"] += magnitude
+                    stats[level_name]["chunk_tokens"] += float(remaining)
+                    stats[level_name]["gate_hit"] += 1.0
         for level_name, payload in stats.items():
             if payload["gate_hit"] <= 0:
                 continue
@@ -969,7 +1075,8 @@ class HOPESelfModBlock(nn.Module):
             return 0.0
         mask_f = chunk_active.unsqueeze(-1).float()
         base_params = fast_state.cms_params[level_name]
-        params_req = require_grad_params(base_params)
+        forward_params = params_with_deltas(self.cms.blocks[level_name], base_params)
+        params_req = require_grad_params(forward_params)
         with torch.enable_grad():
             prediction = call_with_params(self.cms.blocks[level_name], params_req, chunk_inputs)
             loss = _chunk_loss(
@@ -1061,7 +1168,7 @@ class HOPEBlock(nn.Module):
 
         if fast_state.titan_params is None:
             raise ValueError("fast_state.titan_params is required for HOPEBlock fast-state forward")
-        mem_out = call_with_params(self.titan_memory, fast_state.titan_params, attn_out)
+        mem_out = call_with_deltas(self.titan_memory, fast_state.titan_params, attn_out)
         combined = attn_out + mem_out
         if teach_signal is not None and self.config.cms_online_updates:
             cms_out = self._cms_forward_online_fast(
@@ -1093,7 +1200,7 @@ class HOPEBlock(nn.Module):
             level_name = spec.name
             inputs[level_name] = current
             params = fast_state.cms_params[level_name]
-            current = call_with_params(self.cms.blocks[level_name], params, current)
+            current = call_with_deltas(self.cms.blocks[level_name], params, current)
         return current, inputs
 
 
@@ -1151,6 +1258,28 @@ class HOPEBlock(nn.Module):
                         stats[level_name]["grad_norm"] += magnitude
                         stats[level_name]["chunk_tokens"] += float(update_period)
                         stats[level_name]["gate_hit"] += 1.0
+        if self.config.cms_flush_partial_at_end:
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                remaining = int(buffer.count)
+                if remaining <= 0:
+                    continue
+                chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(buffer, remaining)
+                buffer.count -= remaining
+                if not bool(chunk_active.any()):
+                    continue
+                magnitude = self._update_cms_chunk(
+                    level_name,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
+                )
+                if magnitude > 0:
+                    stats[level_name]["grad_norm"] += magnitude
+                    stats[level_name]["chunk_tokens"] += float(remaining)
+                    stats[level_name]["gate_hit"] += 1.0
         for level_name, payload in stats.items():
             if payload["gate_hit"] <= 0:
                 continue
@@ -1188,7 +1317,7 @@ class HOPEBlock(nn.Module):
                 level_name = spec.name
                 level_inputs[level_name] = current
                 params = fast_state.cms_params[level_name]
-                current = call_with_params(self.cms.blocks[level_name], params, current)
+                current = call_with_deltas(self.cms.blocks[level_name], params, current)
             outputs.append(current)
 
             for spec in self.config.cms_levels:
@@ -1216,6 +1345,29 @@ class HOPEBlock(nn.Module):
                         stats[level_name]["grad_norm"] += magnitude
                         stats[level_name]["chunk_tokens"] += float(update_period)
                         stats[level_name]["gate_hit"] += 1.0
+        if self.config.cms_flush_partial_at_end:
+            for spec in self.config.cms_levels:
+                level_name = spec.name
+                buffer = buffers[level_name]
+                remaining = int(buffer.count)
+                if remaining <= 0:
+                    continue
+                chunk_inputs, chunk_teach, chunk_active = _pop_buffer_chunk(buffer, remaining)
+                buffer.count -= remaining
+                if not bool(chunk_active.any()):
+                    continue
+                magnitude = self._update_cms_chunk_fast(
+                    fast_state,
+                    level_name,
+                    chunk_inputs,
+                    chunk_teach,
+                    chunk_active,
+                    surprise_value,
+                )
+                if magnitude > 0:
+                    stats[level_name]["grad_norm"] += magnitude
+                    stats[level_name]["chunk_tokens"] += float(remaining)
+                    stats[level_name]["gate_hit"] += 1.0
         for level_name, payload in stats.items():
             if payload["gate_hit"] <= 0:
                 continue
@@ -1295,7 +1447,8 @@ class HOPEBlock(nn.Module):
         )
         context_vec = attn_out.detach().mean(dim=(0, 1))
         base_params = fast_state.titan_params
-        params_req = require_grad_params(base_params)
+        forward_params = params_with_deltas(self.titan_memory, base_params)
+        params_req = require_grad_params(forward_params)
         with torch.enable_grad():
             query = attn_out.detach()
             target = (modifier - teach_signal.detach()).detach()
@@ -1489,7 +1642,8 @@ class HOPEBlock(nn.Module):
             return 0.0
         mask_f = chunk_active.unsqueeze(-1).float()
         base_params = fast_state.cms_params[level_name]
-        params_req = require_grad_params(base_params)
+        forward_params = params_with_deltas(self.cms.blocks[level_name], base_params)
+        params_req = require_grad_params(forward_params)
         with torch.enable_grad():
             prediction = call_with_params(self.cms.blocks[level_name], params_req, chunk_inputs)
             loss = _chunk_loss(

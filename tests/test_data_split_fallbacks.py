@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import sys
 from pathlib import Path
 
@@ -61,3 +62,51 @@ def test_shard_corpus_accepts_text_data_files_with_train_split(tmp_path: Path) -
     assert stats["sequences"] > 0
     assert stats["shards"] > 0
     assert list(out_dir.glob("shard_*.npy"))
+
+
+def test_train_tokenizer_allows_small_corpus_with_no_hard_vocab_limit(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text(("hello world\n" * 20).strip() + "\n", encoding="utf-8")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "\n".join(
+            [
+                "datasets:",
+                "  - name: local",
+                "    dataset: text",
+                "    split: train",
+                "    text_column: text",
+                f"    data_files: {corpus}",
+                "    sample_limit: 50",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "tokenizer"
+    log_file = tmp_path / "tokenizer_log.json"
+    repo_root = Path(__file__).resolve().parents[1]
+    subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts/data/train_tokenizer.py"),
+            "--manifest",
+            str(manifest),
+            "--vocab-size",
+            "1000",
+            "--model-type",
+            "unigram",
+            "--output-dir",
+            str(out_dir),
+            "--log-file",
+            str(log_file),
+            "--no-hard-vocab-limit",
+        ],
+        check=True,
+        cwd=repo_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert (out_dir / "spm_1000_unigram.model").exists()
+    assert log_file.exists()

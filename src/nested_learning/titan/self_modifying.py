@@ -21,6 +21,9 @@ class SelfModifyingTitansConfig:
     use_alpha: bool = True
     momentum: float = 0.0
     qk_l2_norm: bool = True
+    adaptive_q: bool = False
+    use_skip: bool = True
+    local_conv_window: int | None = 4
     eps: float = 1e-6
 
     def __post_init__(self) -> None:
@@ -36,6 +39,8 @@ class SelfModifyingTitansConfig:
             raise ValueError("objective must be one of {'l2', 'dot'}")
         if not (0.0 <= self.momentum < 1.0):
             raise ValueError("momentum must be in [0, 1)")
+        if self.local_conv_window is not None and int(self.local_conv_window) <= 0:
+            raise ValueError("local_conv_window must be positive")
         if self.chunk_size_memory is None:
             object.__setattr__(self, "chunk_size_memory", int(self.chunk_size_other))
 
@@ -95,6 +100,7 @@ class ResidualMLPMemory(nn.Module):
         out_dim: int,
         hidden_dim: int,
         activation: Callable[[torch.Tensor], torch.Tensor],
+        use_skip: bool = True,
     ) -> None:
         super().__init__()
         if in_dim <= 0 or out_dim <= 0 or hidden_dim <= 0:
@@ -103,16 +109,21 @@ class ResidualMLPMemory(nn.Module):
         self.out_dim = int(out_dim)
         self.hidden_dim = int(hidden_dim)
         self.activation = activation
+        self.use_skip = bool(use_skip)
         self.w2 = nn.Linear(self.in_dim, self.hidden_dim, bias=False)
         self.w1 = nn.Linear(self.hidden_dim, self.out_dim, bias=False)
         self.w_skip: nn.Linear | None = None
-        if self.in_dim != self.out_dim:
+        if self.use_skip and self.in_dim != self.out_dim:
             self.w_skip = nn.Linear(self.in_dim, self.out_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
-        residual = x if self.w_skip is None else self.w_skip(x)
         hidden = self.activation(self.w2(x))
-        return residual + self.w1(hidden)
+        out = self.w1(hidden)
+        if self.w_skip is not None:
+            return self.w_skip(x) + out
+        if out.shape[-1] == x.shape[-1]:
+            return x + out
+        return out
 
 
 class SelfModifyingTitans(nn.Module):
@@ -132,13 +143,35 @@ class SelfModifyingTitans(nn.Module):
         dim = config.dim
         hidden = dim
         act = F.gelu
-        self.m_k = ResidualMLPMemory(in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act)
-        self.m_v = ResidualMLPMemory(in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act)
-        self.m_q = ResidualMLPMemory(in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act)
-        self.m_eta = ResidualMLPMemory(in_dim=dim, out_dim=1, hidden_dim=hidden, activation=act)
-        self.m_alpha = ResidualMLPMemory(in_dim=dim, out_dim=1, hidden_dim=hidden, activation=act)
+        self.local_conv: nn.Conv1d | None = None
+        if config.local_conv_window is not None:
+            window = int(config.local_conv_window)
+            self.local_conv = nn.Conv1d(
+                dim,
+                dim,
+                kernel_size=window,
+                groups=dim,
+                padding=0,
+                bias=False,
+            )
+        self.w_q = nn.Linear(dim, dim, bias=False)
+        self.m_k = ResidualMLPMemory(
+            in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act, use_skip=config.use_skip
+        )
+        self.m_v = ResidualMLPMemory(
+            in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act, use_skip=config.use_skip
+        )
+        self.m_q = ResidualMLPMemory(
+            in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act, use_skip=config.use_skip
+        )
+        self.m_eta = ResidualMLPMemory(
+            in_dim=dim, out_dim=1, hidden_dim=hidden, activation=act, use_skip=config.use_skip
+        )
+        self.m_alpha = ResidualMLPMemory(
+            in_dim=dim, out_dim=1, hidden_dim=hidden, activation=act, use_skip=config.use_skip
+        )
         self.m_memory = ResidualMLPMemory(
-            in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act
+            in_dim=dim, out_dim=dim, hidden_dim=hidden, activation=act, use_skip=config.use_skip
         )
 
     def init_fast_state(self) -> SelfModifyingTitansState:
@@ -151,8 +184,32 @@ class SelfModifyingTitans(nn.Module):
             memory=self._init_memory_state(self.m_memory),
         )
 
+    def apply_updates_inplace(
+        self,
+        x: torch.Tensor,
+        *,
+        chunk_size_other: int | None = None,
+        chunk_size_memory: int | None = None,
+    ) -> None:
+        """
+        Apply the self-modifying update rule to the *module parameters* in-place.
+
+        This is intended to be called in an explicit "update pass" under `torch.no_grad()`
+        (e.g., after an outer backward), so we avoid mixing differentiable reads with
+        in-place writes during the same autograd graph.
+        """
+        state = self.init_fast_state()
+        _out, updated = self.forward_with_updates(
+            x,
+            state,
+            chunk_size_other=chunk_size_other,
+            chunk_size_memory=chunk_size_memory,
+        )
+        self._load_state_mean_(updated)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
-        q = self.m_q(x)
+        x = self._apply_local_conv(x)
+        q = self.m_q(x) if self.config.adaptive_q else self.w_q(x)
         if self.config.qk_l2_norm:
             q = F.normalize(q, dim=-1, eps=self.config.eps)
         return self.m_memory(q)
@@ -168,10 +225,15 @@ class SelfModifyingTitans(nn.Module):
         if dim != self.config.dim:
             raise ValueError(f"Expected dim={self.config.dim}, got {dim}")
         state = self._ensure_batched_state(state, batch)
-        q = self._memory_forward(x, state.q)
+        x = self._apply_local_conv(x)
+        q = (
+            self._memory_forward(x, state.q, meta=self.m_q)
+            if self.config.adaptive_q
+            else self.w_q(x)
+        )
         if self.config.qk_l2_norm:
             q = F.normalize(q, dim=-1, eps=self.config.eps)
-        return self._memory_forward(q, state.memory)
+        return self._memory_forward(q, state.memory, meta=self.m_memory)
 
     def forward_with_updates(
         self,
@@ -187,6 +249,7 @@ class SelfModifyingTitans(nn.Module):
         if dim != self.config.dim:
             raise ValueError(f"Expected dim={self.config.dim}, got {dim}")
         state = self._ensure_batched_state(state, batch)
+        x = self._apply_local_conv(x)
         other_chunk = int(
             self.config.chunk_size_other if chunk_size_other is None else chunk_size_other
         )
@@ -222,7 +285,11 @@ class SelfModifyingTitans(nn.Module):
 
                 k_chunk = self._memory_forward(x_chunk, state.k)
                 v_chunk = self._memory_forward(x_chunk, state.v)
-                q_chunk = self._memory_forward(x_chunk, state.q)
+                q_chunk = (
+                    self._memory_forward(x_chunk, state.q)
+                    if self.config.adaptive_q
+                    else self.w_q(x_chunk)
+                )
                 if self.config.qk_l2_norm:
                     k_chunk = F.normalize(k_chunk, dim=-1, eps=self.config.eps)
                     q_chunk = F.normalize(q_chunk, dim=-1, eps=self.config.eps)
@@ -248,7 +315,9 @@ class SelfModifyingTitans(nn.Module):
                 idx = end
 
                 if idx == next_other and other_k:
-                    other_memories: tuple[str, ...] = ("k", "v", "q", "eta")
+                    other_memories: tuple[str, ...] = ("k", "v", "eta")
+                    if self.config.adaptive_q:
+                        other_memories = (*other_memories, "q")
                     if self.config.use_alpha:
                         other_memories = (*other_memories, "alpha")
                     self._apply_chunk_update_seq(
@@ -279,7 +348,9 @@ class SelfModifyingTitans(nn.Module):
                     memory_alpha.clear()
 
             if other_k:
-                other_memories = ("k", "v", "q", "eta")
+                other_memories = ("k", "v", "eta")
+                if self.config.adaptive_q:
+                    other_memories = (*other_memories, "q")
                 if self.config.use_alpha:
                     other_memories = (*other_memories, "alpha")
                 self._apply_chunk_update_seq(
@@ -301,6 +372,41 @@ class SelfModifyingTitans(nn.Module):
                 )
 
         return torch.cat(outputs, dim=1), state
+
+    def _apply_local_conv(self, x: torch.Tensor) -> torch.Tensor:
+        if self.local_conv is None:
+            return x
+        if x.ndim != 3:
+            raise ValueError("Expected x to have shape (B, T, D)")
+        kernel = int(self.local_conv.kernel_size[0])
+        # Causal depthwise conv: only attends to past tokens.
+        x_t = x.transpose(1, 2)
+        x_t = F.pad(x_t, (kernel - 1, 0))
+        x_t = self.local_conv(x_t)
+        return x_t.transpose(1, 2)
+
+    def _load_state_mean_(self, state: SelfModifyingTitansState) -> None:
+        def _mean_weight(weight: torch.Tensor) -> torch.Tensor:
+            return weight.mean(dim=0) if weight.ndim == 3 else weight
+
+        def _copy(module: ResidualMLPMemory, mem: ResidualMLPMemoryState) -> None:
+            module.w1.weight.copy_(_mean_weight(mem.w1))
+            module.w2.weight.copy_(_mean_weight(mem.w2))
+            if module.w_skip is None:
+                return
+            if mem.w_skip is None:
+                raise RuntimeError("Expected w_skip state for projected residual memory")
+            module.w_skip.weight.copy_(_mean_weight(mem.w_skip))
+
+        with torch.no_grad():
+            _copy(self.m_k, state.k)
+            _copy(self.m_v, state.v)
+            _copy(self.m_eta, state.eta)
+            if self.config.use_alpha:
+                _copy(self.m_alpha, state.alpha)
+            _copy(self.m_memory, state.memory)
+            if self.config.adaptive_q:
+                _copy(self.m_q, state.q)
 
     def _apply_chunk_update(
         self,
@@ -569,23 +675,50 @@ class SelfModifyingTitans(nn.Module):
             m_w_skip=_expand_opt(mem.m_w_skip),
         )
 
-    def _memory_forward(self, x: torch.Tensor, mem: ResidualMLPMemoryState) -> torch.Tensor:
+    def _memory_forward(
+        self,
+        x: torch.Tensor,
+        mem: ResidualMLPMemoryState,
+        *,
+        meta: ResidualMLPMemory | None = None,
+    ) -> torch.Tensor:
+        if meta is None:
+            w2 = mem.w2
+            w1 = mem.w1
+            w_skip = mem.w_skip
+        else:
+            w2 = self._straight_through_meta(mem.w2, meta.w2.weight)
+            w1 = self._straight_through_meta(mem.w1, meta.w1.weight)
+            w_skip = None
+            if mem.w_skip is not None:
+                if meta.w_skip is None:
+                    raise RuntimeError("Expected meta w_skip for projected residual memory")
+                w_skip = self._straight_through_meta(mem.w_skip, meta.w_skip.weight)
         if x.ndim == 2:
             x_seq = x.unsqueeze(1)
             squeeze = True
         else:
             x_seq = x
             squeeze = False
-        w2_t = mem.w2.transpose(-1, -2)
+        w2_t = w2.transpose(-1, -2)
         hidden = torch.matmul(x_seq, w2_t)
         hidden = F.gelu(hidden)
-        w1_t = mem.w1.transpose(-1, -2)
+        w1_t = w1.transpose(-1, -2)
         out = torch.matmul(hidden, w1_t)
-        if mem.w_skip is None:
-            out = out + x_seq
-        else:
-            w_skip_t = mem.w_skip.transpose(-1, -2)
+        if w_skip is not None:
+            w_skip_t = w_skip.transpose(-1, -2)
             out = out + torch.matmul(x_seq, w_skip_t)
+        elif out.size(-1) == x_seq.size(-1):
+            out = out + x_seq
         if squeeze:
             return out.squeeze(1)
         return out
+
+    @staticmethod
+    def _straight_through_meta(fast: torch.Tensor, meta: torch.Tensor) -> torch.Tensor:
+        if meta.ndim > fast.ndim:
+            raise ValueError("meta tensor must have <= fast tensor rank")
+        expanded = meta
+        while expanded.ndim < fast.ndim:
+            expanded = expanded.unsqueeze(0)
+        return fast + (expanded - expanded.detach())

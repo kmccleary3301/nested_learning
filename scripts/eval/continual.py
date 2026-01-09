@@ -13,6 +13,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
 from nested_learning.data import TokenShardDataset, collate_batch
+from nested_learning.device import resolve_device
 from nested_learning.memorize import (
     MemorizeConfig,
     memorize_tokens,
@@ -124,7 +125,7 @@ def main(
 
     cfg = OmegaConf.load(config)
     cfg = unwrap_config(cfg)
-    device_obj = torch.device(device)
+    device_obj = resolve_device(device)
     results = []
 
     if memorize_paths.lower() == "all":

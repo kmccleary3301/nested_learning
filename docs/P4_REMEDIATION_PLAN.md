@@ -1,64 +1,41 @@
-# P4 Remediation Plan — Paper-Faithful HOPE/Nested Learning
+# P4 Remediation Plan — Status & Tracking (Paper-Faithful HOPE/Nested Learning)
 
-This checklist converts the planner critique into a concrete, ordered execution plan. It is scoped to **faithfulness-first** changes and minimal tests that prove correctness at small scale. Large-scale training is explicitly out of scope.
+This file started as an execution checklist for the P4 “paper faithfulness” sprint. It is now maintained as a **status page** so contributors can quickly see what’s implemented, what is verified by tests, and what follow‑ups remain.
 
-## P0 — Must-Fix Correctness (paper faithfulness)
+For the canonical “how to run paper‑faithful mode” guide, see `docs/PAPER_COMPLIANCE.md`.
 
-### P0.1 Self‑modifying Titans always‑on in HOPE forward
-- [ ] Add a non‑memorize path where `HOPESelfModBlock.forward` runs self‑mod updates whenever a fast state exists.
-- [ ] Decide default behavior:
-  - Option A: require explicit `self_mod_mode="online"` in config.
-  - Option B: default to online when `fast_state` is provided (safer for backward compatibility).
-- [ ] Add a small unit test confirming state changes without `teach_signal`.
-- [ ] Document behavior toggle in `docs/experiments_report.md` or a compliance doc.
+## Status (core remediation)
 
-### P0.2 CMS update semantics: per‑token δ and **sum‑over‑chunk**
-- [ ] Replace chunk‑mean δ broadcast with per‑token δ targets.
-- [ ] Ensure update aggregation sums contributions over the chunk (Eq. 71), not average.
-- [ ] Verify correct handling of partial chunks and masking.
-- [ ] Add a minimal test with opposing per‑token δ to validate gradient direction.
+**P0/P1 core faithfulness items:** complete.
 
-### P0.3 Online CMS forward (read‑after‑write)
-- [ ] Implement chunked CMS forward that updates CMS at chunk boundaries and uses the updated CMS for the next chunk.
-- [ ] Ensure behavior is optional and gated by config (to avoid accidental regressions).
-- [ ] Add a test showing outputs differ between online vs offline CMS for chunked input.
+Implemented behaviors (with pointers):
+- **Self‑modifying TITAN path always-on** during the inner/update pass (does not require an external teach signal).  
+  Code: `src/nested_learning/hope/block.py`  
+  Test: `tests/test_selfmod_online.py`
+- **CMS update semantics** use per‑token δ targets and **sum‑over‑chunk** accumulation (no chunk‑mean broadcast).  
+  Code: `src/nested_learning/hope/block.py` (`_chunk_loss`, `_CmsBuffer`, `_pop_buffer_chunk`)  
+  Test: `tests/test_cms.py`
+- **Online CMS read‑after‑write** behavior (later tokens can see updated CMS weights when using the online training path).  
+  Code: `src/nested_learning/hope/block.py` (`_cms_forward_online`) + `src/nested_learning/training.py` (`train.online_updates`)  
+  Test: `tests/test_cms.py` (`test_cms_online_updates_affect_later_tokens`)
+- **Per‑layer local error signals (δℓ)** computed via autograd and routed into each block.  
+  Code: `src/nested_learning/model.py` (`forward_with_block_outputs`, `teach_signals`) + `src/nested_learning/training.py` (`_compute_layer_teach_signals`)  
+  Test: `tests/test_teach_signal.py`
+- **Paper optimizer option (M3)** implemented and selectable via `optim.type=m3`.  
+  Code: `src/nested_learning/optim/m3.py`  
+  Test: `tests/test_m3.py`
 
-### P0.4 Layer‑wise δℓ signals (or explicit documented surrogate)
-- [ ] Implement per‑block δ extraction via hooks (`retain_grad`) or explicit backward pass.
-- [ ] Route δℓ into each block’s update path.
-- [ ] If full δℓ is not feasible, explicitly document the surrogate (global teach signal) and gate it by config.
-- [ ] Add a test comparing δℓ to global teach in a 2‑block toy model.
+Docs/telemetry added:
+- Paper‑faithful run flags + code mapping: `docs/PAPER_COMPLIANCE.md`
+- README “paper‑faithful mode” snippet: `README.md`
+- Per‑layer update telemetry (e.g. `layerX.cms.*`) emitted via `HOPEModel._gather_block_stats()`.
 
-### P0.5 Implement M3 optimizer (paper‑accurate option)
-- [ ] Implement M3 per paper (Newton–Schulz orthogonalization + multi‑scale momentum).
-- [ ] Add a config option to choose `optim.type=m3`.
-- [ ] Add a minimal update‑direction test on toy tensors to validate step.
-- [ ] Keep existing Muon+AdamW path as baseline; document differences.
+## Remaining follow-ups (optional hardening, not required for “implemented correctly”)
 
-## P1 — Tests + Documentation to defend faithfulness
+These are improvements that strengthen the validation story or reduce ambiguity, but they are not required to claim the core mechanism is implemented:
 
-### P1.1 Minimal correctness tests (unit)
-- [ ] Teach‑signal vs autograd gradient match (single‑layer toy).
-- [ ] CMS per‑token δ vs chunk‑mean broadcast mismatch test.
-- [ ] Self‑mod single‑step analytic check (linearized memory).
-- [ ] Chunk boundary semantics test (two chunks vs one chunk).
-
-### P1.2 Documentation: Paper compliance
-- [ ] Add `docs/paper_compliance.md` mapping equations → code.
-- [ ] Clearly label divergences and the toggle flags that isolate them.
-- [ ] Update `README.md` with a “Paper‑faithful mode” section.
-
-### P1.3 Telemetry & logging
-- [ ] Log per‑level update stats with chunk index and surprise value.
-- [ ] Emit “self‑mod online enabled” flags at run start.
-
-## P2 — Optional (math‑preserving) improvements
-
-### P2.1 Performance hygiene
-- [ ] Avoid O(N²) online CMS in long sequences via chunk batching.
-- [ ] Reduce overhead in CMS fast‑params functional_call path.
-
-### P2.2 Config clarity
-- [ ] Separate “chunk size” vs “update period” semantics in configs.
-- [ ] Document which values match paper defaults.
+- [ ] Add an explicit unit test that demonstrates **per‑token δ vs chunk‑mean broadcast** leads to different update directions (sanity test on a toy CMS).
+- [ ] Add a “two chunks vs one chunk” regression test to lock in chunk boundary semantics in `train.online_updates` mode.
+- [ ] Expose `cms_online_updates` / `cms_chunk_reduction` / `selfmod_online_updates` as Hydra config toggles (currently paper‑faithful defaults live in the HOPE block configs).
+- [ ] Port the `train.py` online/per‑layer δℓ path to multi‑GPU (FSDP or custom DDP) so paper‑faithful mode scales beyond single GPU.
 

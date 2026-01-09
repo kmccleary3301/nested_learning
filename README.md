@@ -5,7 +5,13 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![Status](https://img.shields.io/badge/tests-smoke--ready-lightgrey)
 
-High-fidelity reproduction of Google's Nested Learning (HOPE) architecture, matching the quality bar set by lucidrains' TITAN reference while remaining fully open-source and `uv` managed.
+Mechanism-level reproduction of Google's Nested Learning (HOPE) architecture (HOPE blocks, CMS, and Self‑Modifying TITANs), matching the quality bar set by lucidrains' TITAN reference while remaining fully open-source and `uv` managed.
+
+Faithfulness scope (high level):
+- ✅ HOPE / CMS / Self‑Modifying Titans update rules + wiring (mechanism-level)
+- ✅ Tensor-level invariants covered by unit tests (teach-signal, δℓ, CMS chunking, causality)
+- ⚠️ Online “writes” are stop‑grad (no backprop through online updates / boundary-state training procedure)
+- ⚠️ Multi‑GPU “paper-faithful online updates” are not supported in this repo (DDP disables some features)
 
 ## Quickstart
 ```bash
@@ -67,6 +73,10 @@ Developer checks:
   ```bash
   uv run python train.py --config-name pilot_smoke
   ```
+- Apple Silicon (MPS, if available):
+  ```bash
+  uv run python train.py --config-name pilot_smoke train.device=mps
+  ```
 - DDP (torchrun):
   ```bash
   torchrun --nproc_per_node=2 train_dist.py --config-name mid
@@ -88,16 +98,22 @@ Developer checks:
     deepspeed.config=configs/deepspeed/zero3.json
   ```
 
-### Paper-faithful mode (HOPE / Nested Learning)
+### Paper-faithful mechanisms (HOPE / Nested Learning)
 
-Enable online updates and per‑layer local error signals (δℓ):
+Use the paper-faithful preset configs (single GPU):
 
 ```bash
-train.online_updates=true
-train.online_chunk_size=0     # auto‑infer min CMS update period
-train.per_layer_teach_signal=true
-optim.type=m3                # optional: paper M3 optimizer
+uv run python train.py --config-name pilot_paper_faithful
+# HOPE self-mod variant:
+uv run python train.py --config-name pilot_selfmod_paper_faithful
 ```
+
+Notes:
+- Paper-faithful presets set `data.batch_size=1` to avoid cross-sample fast-memory sharing.
+
+Overrides:
+- `optim.type=m3` (paper optimizer option)
+- `train.steps=...` / `train.device=...`
 
 See `docs/PAPER_COMPLIANCE.md` for full fidelity notes.
 
@@ -183,17 +199,18 @@ Memorization metrics (baseline vs adaptive) are emitted alongside task accuracy 
 ## Architecture variants
 Select the paper-defined variant via `model.block_variant` in Hydra configs:
 - `hope_attention` (paper HOPE-Attention): `Attention → CMS` (paper-defined).
-- `hope_selfmod` (paper HOPE scaffold): `Self-modifying Titans (Eqs. 83–93; Eq. 91 residual MLP memories) → CMS` with chunked updates via `model.self_mod_chunk_size` (others) and `model.self_mod_chunk_size_memory` (M_memory).
+- `hope_selfmod` (paper HOPE scaffold): `Self-modifying Titans (Eqs. 83–93; Eq. 91 residual MLP memories) → CMS` with (by default) **fixed q** and **local conv window=4**, plus chunked updates via `model.self_mod_chunk_size` (others) and `model.self_mod_chunk_size_memory` (M_memory). See `docs/PAPER_COMPLIANCE.md` for the “differentiable read / update-pass writes” semantics.
 - `hope_hybrid` (legacy): `Attention + TitanMemory + CMS` (exploratory; not paper-defined).
 - `transformer` (baseline): `Attention → MLP` (no TITAN/CMS learning updates; useful for Phase 2 comparisons).
 
 Self-modifying Titans knobs (ablation-friendly, paper-aligned):
-- `model.self_mod_objective` (`l2` vs `dot`), `model.self_mod_use_rank1_precond` (DGD-like preconditioner), `model.self_mod_use_alpha` (weight-decay/retention gate), `model.self_mod_stopgrad_vhat`, `model.self_mod_momentum`.
+- `model.self_mod_objective` (`l2` vs `dot`), `model.self_mod_use_rank1_precond` (DGD-like preconditioner), `model.self_mod_use_alpha` (weight-decay/retention gate), `model.self_mod_stopgrad_vhat`, `model.self_mod_momentum`, `model.self_mod_adaptive_q`, `model.self_mod_local_conv_window`.
 
 ## Fast state (Nested Learning semantics)
 In-context updates can run against a per-context fast state so meta parameters never change:
 - `HOPEModel.init_fast_state()` / `TitanOnlyModel.init_fast_state()` returns a `ModelFastState`.
 - `MemorizeConfig.use_fast_state=true` (default) requires passing `fast_state` into `memorize_tokens()` / `memorize_sequence()`; evaluation scripts handle this automatically.
+- Training can also run update passes against a per-batch fast state via `train.use_fast_state=true` (meta+delta fast state: meta params are learnable; online updates write deltas only). If `data.batch_size>1`, CMS/TITAN fast state is shared across the batch; use `data.batch_size=1` for strict per-context semantics. See `docs/PAPER_COMPLIANCE.md`.
 
 ## Releases
 Before tagging or announcing a new checkpoint, work through `docs/release_checklist.md` so the bundle includes manifest validation reports, tokenizer coverage JSON, zero-shot/NIAH/continual/passkey/PG-19 eval outputs, forgetting plots, and filled checkpoint reports.

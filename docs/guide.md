@@ -54,9 +54,37 @@ uv run pytest
 
 ---
 
+## 3.5 Glossary (sequence / segment / batch / chunk / update_period)
+
+This repo uses a few terms that matter for Nested Learning semantics:
+
+- **Sequence**: the token context window fed to the model (length = `data.seq_len`).
+- **Batch**: number of sequences processed in parallel (size = `data.batch_size`).
+- **Context (fast state)**: the independent stream/episode that “fast” memories adapt to. In this repo, CMS/TITAN fast state is currently **shared across the batch**, so strict per‑context semantics requires `data.batch_size=1` when `train.use_fast_state=true`.
+- **Segment**: a contiguous slice of source text produced by the sharding/tokenization pipeline; segments are packed/sliced into sequences for training.
+- **Chunk (training)**: when `train.online_updates=true`, a sequence is processed in chunks of length `train.online_chunk_size` (or inferred). The training loop does forward+backward per chunk and runs an explicit “update pass” between chunks so later chunks can see updated memories.
+- **update_period (memory level)**: per-level cadence (in tokens) that controls how often a memory component updates (e.g., `cms_fast.update_period=1`, `cms_mid.update_period=4`). This is enforced *inside* the HOPE blocks during the update pass.
+- **base_chunk (internal streaming stride)**: in online CMS mode, blocks stream tokens at `base_chunk = min(update_period)` so each level can update exactly on its own boundaries.
+
+### Worked example (numbers)
+
+Assume:
+- `data.seq_len=8`, `data.batch_size=1`
+- CMS levels: `cms_fast.update_period=1`, `cms_mid.update_period=4`
+- `train.online_updates=true`, `train.online_chunk_size=0` (auto‑infer; clamped to ≥2)
+
+Then:
+- Training chunks will be processed as `[0..1]`, `[2..3]`, `[4..5]`, `[6..7]`.
+- After each chunk’s backward pass, the update pass runs. Inside that pass:
+  - CMS uses `base_chunk=1` so it can stream token-by-token.
+  - `cms_fast` can update once per token (8 events total over the full sequence).
+  - `cms_mid` updates once per 4 tokens (2 events total over the full sequence).
+
+This separation is intentional: **training chunking** is about “when can later tokens see updates,” while **update_period** is about “how frequently each memory level is allowed to update.”
+
 ## 4. Quickstart Workflow
 1. **Install deps:** `uv sync --all-extras`
-2. **Sample data:** `uv run bash scripts/data/run_sample.sh` (downloads + filters RefinedWeb/Wiki/C4/SlimPajama/code samples, trains the tokenizer if missing, shards them, records stats in `data/mixtures/refinedweb_mix_filtered_shards.json`).
+2. **Sample data:** `uv run bash scripts/data/run_sample.sh` (downloads + filters RefinedWeb/Wiki/C4/SlimPajama/code samples, trains the tokenizer if missing, shards them, records stats in `data/mixtures/refinedweb_mix_filtered_shards.json`). The sample tokenizer path uses `--no-hard-vocab-limit` so SentencePiece won’t error on tiny corpora.
 3. **Smoke training:** `uv run bash scripts/run_smoke.sh pilot` (runs CPU pilot config, saves checkpoints to `artifacts/checkpoints/pilot_smoke/`).
 4. **Zero-shot sanity:** `uv run python scripts/eval/zeroshot.py --tasks piqa --max-samples 32 --checkpoint artifacts/examples/pilot_dummy.pt --tokenizer-path artifacts/tokenizer/refinedweb_mix/spm_32000_unigram.model --config configs/hope/pilot.yaml --device cpu`
 5. **Full automation (optional):** `uv run bash scripts/run_e2e_smoke.sh` (sync → sample data → smoke train → PIQA eval, logs under `logs/`).

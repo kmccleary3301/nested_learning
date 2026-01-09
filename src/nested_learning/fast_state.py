@@ -12,8 +12,16 @@ from .titan.self_modifying import SelfModifyingTitansState
 ParamDict = Dict[str, torch.Tensor]
 
 
-def clone_module_params(module: nn.Module) -> ParamDict:
-    return {name: param.detach().clone() for name, param in module.named_parameters()}
+def init_module_deltas(module: nn.Module) -> ParamDict:
+    """
+    Initialize a per-parameter "fast state" delta dict for meta+delta fast state.
+
+    The fast state stores *deltas* (initialized to 0) rather than detached parameter clones so that
+    forward passes can use `meta_param + delta`, allowing outer gradients to flow to meta params
+    while keeping online updates as stop-grad writes into the delta tensors.
+    """
+
+    return {name: torch.zeros_like(param).detach() for name, param in module.named_parameters()}
 
 
 @dataclass
@@ -35,8 +43,8 @@ def build_block_fast_state(
 ) -> BlockFastState:
     titan_params = None
     if titan_module is not None:
-        titan_params = clone_module_params(titan_module)
-    cms_params = {name: clone_module_params(block) for name, block in cms_blocks.items()}
+        titan_params = init_module_deltas(titan_module)
+    cms_params = {name: init_module_deltas(block) for name, block in cms_blocks.items()}
     level_cfg = LevelConfig(specs=specs, optimizer_configs=optimizer_configs, default_lr=default_lr)
     level_manager = LevelOptimizerManager(level_cfg)
     selfmod_state = None

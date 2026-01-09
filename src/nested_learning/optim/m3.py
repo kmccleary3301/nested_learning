@@ -106,14 +106,16 @@ class M3(torch.optim.Optimizer):
                 v.addcmul_(grad, grad, value=beta2)
                 slow_buffer.add_(grad)
 
-                if slow_chunk > 0 and state["step"] % slow_chunk == 0:
-                    m2.add_(slow_buffer, alpha=beta3)
-                    slow_buffer.zero_()
-                    state["o2"] = _orthogonalize(m2, steps=ns_steps, eps=eps)
-
                 o1 = _orthogonalize(m1, steps=ns_steps, eps=eps)
                 o2 = state["o2"]
                 denom = v.sqrt().add_(eps)
                 update = (o1 + alpha * o2) / denom
                 p.add_(update, alpha=-lr)
+
+                if slow_chunk > 0 and state["step"] % slow_chunk == 0:
+                    # Paper Algorithm 1 uses the updated slow momentum term in the *next* chunk.
+                    # Compute it after applying the current step update to avoid off-by-one usage.
+                    m2.add_(slow_buffer, alpha=beta3)
+                    slow_buffer.zero_()
+                    state["o2"] = _orthogonalize(m2, steps=ns_steps, eps=eps)
         return loss

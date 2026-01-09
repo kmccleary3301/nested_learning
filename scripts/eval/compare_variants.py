@@ -12,6 +12,7 @@ import typer
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
+from nested_learning.device import resolve_device
 from nested_learning.memorize import (
     MemorizeConfig,
     memorize_sequence,
@@ -421,7 +422,7 @@ def main(
     ),
 ) -> None:
     random.seed(seed)
-    torch_device = torch.device(device)
+    torch_device = resolve_device(device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)
 
     if smoke:

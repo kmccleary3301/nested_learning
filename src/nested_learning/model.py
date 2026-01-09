@@ -28,6 +28,7 @@ class ModelConfig:
     heads: int
     titan_level: LevelSpec
     cms_levels: Sequence[LevelSpec]
+    cms_flush_partial_at_end: bool = False
     optimizers: Dict[str, dict] | None = None
     teach_scale: float = 1.0
     teach_clip: float = 0.0
@@ -45,7 +46,10 @@ class ModelConfig:
     self_mod_stopgrad_vhat: bool = True
     self_mod_use_rank1_precond: bool = True
     self_mod_use_alpha: bool = True
+    self_mod_use_skip: bool = True
     self_mod_momentum: float = 0.0
+    self_mod_adaptive_q: bool = False
+    self_mod_local_conv_window: int | None = 4
     transformer_mlp_hidden_multiplier: int = 4
     transformer_activation: str = "gelu"
     block_variant: str = "hope_hybrid"
@@ -70,6 +74,7 @@ class HOPEModel(nn.Module):
                 dim=config.dim,
                 heads=config.heads,
                 cms_levels=config.cms_levels,
+                cms_flush_partial_at_end=config.cms_flush_partial_at_end,
                 qk_l2_norm=config.qk_l2_norm,
                 local_conv_window=config.local_conv_window,
                 self_mod_lr=config.self_mod_lr,
@@ -84,6 +89,7 @@ class HOPEModel(nn.Module):
                 heads=config.heads,
                 titan_level=config.titan_level,
                 cms_levels=config.cms_levels,
+                cms_flush_partial_at_end=config.cms_flush_partial_at_end,
                 qk_l2_norm=config.qk_l2_norm,
                 local_conv_window=config.local_conv_window,
                 self_mod_lr=config.self_mod_lr,
@@ -97,7 +103,10 @@ class HOPEModel(nn.Module):
             selfmod_block_config = HOPESelfModBlockConfig(
                 dim=config.dim,
                 cms_levels=config.cms_levels,
+                cms_flush_partial_at_end=config.cms_flush_partial_at_end,
                 qk_l2_norm=config.qk_l2_norm,
+                selfmod_adaptive_q=config.self_mod_adaptive_q,
+                selfmod_local_conv_window=config.self_mod_local_conv_window,
                 eta_scale=config.self_mod_lr,
                 selfmod_chunk_size=config.self_mod_chunk_size,
                 selfmod_chunk_size_memory=config.self_mod_chunk_size_memory,
@@ -105,6 +114,7 @@ class HOPEModel(nn.Module):
                 selfmod_stopgrad_vhat=config.self_mod_stopgrad_vhat,
                 selfmod_use_rank1_precond=config.self_mod_use_rank1_precond,
                 selfmod_use_alpha=config.self_mod_use_alpha,
+                selfmod_use_skip=config.self_mod_use_skip,
                 selfmod_momentum=config.self_mod_momentum,
                 self_mod_lr=config.self_mod_lr,
                 optimizer_configs=config.optimizers or {},

@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 import typer
 
+from nested_learning.device import resolve_device
 from nested_learning.levels import LevelSpec
 from nested_learning.memorize import MemorizeConfig, memorize_tokens
 from nested_learning.model import HOPEModel, ModelConfig
@@ -77,7 +78,7 @@ def main(
         Path("eval/phase2_memorization_delta_smoke.json"), help="Where to write results."
     ),
 ) -> None:
-    torch_device = torch.device(device)
+    torch_device = resolve_device(device)
     token_gen = torch.Generator(device="cpu").manual_seed(1337)
     tokens = torch.randint(0, vocab_size, (batch_size, seq_len), generator=token_gen).to(
         torch_device
@@ -97,4 +98,3 @@ def main(
 
 if __name__ == "__main__":
     app()
-

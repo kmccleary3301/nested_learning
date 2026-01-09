@@ -9,6 +9,7 @@ import torch
 import typer
 from omegaconf import OmegaConf
 
+from nested_learning.device import resolve_device
 from nested_learning.memorize import (
     MemorizeConfig,
     memorize_sequence,
@@ -83,7 +84,7 @@ def main(
         ),
     ),
 ) -> None:
-    torch_device = torch.device(device)
+    torch_device = resolve_device(device)
     model = load_model(config, checkpoint, torch_device)
     tokenizer = SentencePieceTokenizer(tokenizer_path)
     if memorize_paths.lower() == "all":

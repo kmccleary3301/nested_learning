@@ -13,7 +13,6 @@ from typing import Dict, Protocol, Tuple, cast
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler, IterableDataset
 
@@ -94,6 +93,10 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
     self_mod_chunk_size_memory = (
         None if self_mod_chunk_size_memory_raw is None else int(self_mod_chunk_size_memory_raw)
     )
+    self_mod_local_conv_window_raw = model_cfg.get("self_mod_local_conv_window", 4)
+    self_mod_local_conv_window = (
+        None if self_mod_local_conv_window_raw is None else int(self_mod_local_conv_window_raw)
+    )
     hope_cfg = ModelConfig(
         vocab_size=model_cfg.vocab_size,
         dim=model_cfg.dim,
@@ -101,6 +104,7 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         heads=model_cfg.heads,
         titan_level=titan_spec,
         cms_levels=cms_specs,
+        cms_flush_partial_at_end=bool(model_cfg.get("cms_flush_partial_at_end", False)),
         optimizers=optimizer_cfg,
         teach_scale=teach_scale,
         teach_clip=teach_clip,
@@ -117,7 +121,10 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         self_mod_stopgrad_vhat=bool(model_cfg.get("self_mod_stopgrad_vhat", True)),
         self_mod_use_rank1_precond=bool(model_cfg.get("self_mod_use_rank1_precond", True)),
         self_mod_use_alpha=bool(model_cfg.get("self_mod_use_alpha", True)),
+        self_mod_use_skip=bool(model_cfg.get("self_mod_use_skip", True)),
         self_mod_momentum=float(model_cfg.get("self_mod_momentum", 0.0)),
+        self_mod_adaptive_q=bool(model_cfg.get("self_mod_adaptive_q", False)),
+        self_mod_local_conv_window=self_mod_local_conv_window,
         transformer_mlp_hidden_multiplier=int(
             model_cfg.get("transformer_mlp_hidden_multiplier", 4)
         ),
@@ -205,19 +212,46 @@ def _build_dataset(data_cfg: DictConfig):
 
 
 def compute_teach_signal(
-    model: "_HasLMHead", logits: torch.Tensor, tokens: torch.Tensor
+    model: "_HasLMHead",
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    *,
+    ignore_index: int | None = None,
 ) -> torch.Tensor:
     """
     Approximate dL/dh where h is the hidden state before the LM head.
-    Aligns with CE(logits[:, :-1], tokens[:, 1:]) used in training.
+
+    This matches the gradient of mean next-token CE:
+      CE(logits[:, :-1], tokens[:, 1:]) with mean reduction.
+
+    If ignore_index is provided, targets equal to ignore_index are masked out and
+    the mean reduction denominator becomes the number of active targets (matching
+    PyTorch CE semantics).
     """
     logits_detached = logits.detach()
     probs = torch.softmax(logits_detached, dim=-1)
     target_tokens = tokens[:, 1:]
-    targets = F.one_hot(target_tokens, probs.size(-1)).float()
-    residual = probs[:, :-1] - targets  # only positions used in loss
-    denom = max(1, tokens.size(0) * max(1, tokens.size(1) - 1))
+    residual = probs[:, :-1].clone()
+
+    if ignore_index is None:
+        safe_targets = target_tokens
+        src = -torch.ones(
+            (*safe_targets.shape, 1),
+            device=residual.device,
+            dtype=residual.dtype,
+        )
+        denom: torch.Tensor | float = max(1, tokens.size(0) * max(1, tokens.size(1) - 1))
+    else:
+        active = target_tokens != ignore_index
+        safe_targets = torch.where(active, target_tokens, torch.zeros_like(target_tokens))
+        active_f = active.to(dtype=residual.dtype)
+        residual.mul_(active_f.unsqueeze(-1))
+        src = -active_f.unsqueeze(-1)
+        denom = active_f.sum().clamp(min=1.0)
+
+    residual.scatter_add_(-1, safe_targets.unsqueeze(-1), src)
     residual = residual / denom
+
     head_weight = model.lm_head.weight.detach()
     grad = residual @ head_weight
     pad = torch.zeros(
@@ -318,6 +352,48 @@ def maybe_save_checkpoint(
     print(f"{prefix} saved {ckpt_path} (global_step={global_step})")
 
 
+def _validate_distributed_config(cfg: DictConfig, distributed: bool) -> None:
+    if not distributed:
+        return
+    fail_if_faithful_disabled = bool(cfg.train.get("fail_if_paper_faithful_disabled", False))
+    if not fail_if_faithful_disabled:
+        return
+    if bool(cfg.train.get("per_layer_teach_signal", False)):
+        raise RuntimeError(
+            "train.per_layer_teach_signal=true is not supported under DDP in this repo. "
+            "Set train.fail_if_paper_faithful_disabled=false to allow the fallback, "
+            "or run single-process training."
+        )
+    if bool(cfg.train.get("online_updates", False)):
+        raise RuntimeError(
+            "train.online_updates=true is not supported under DDP in this repo. "
+            "Set train.fail_if_paper_faithful_disabled=false to allow the fallback, "
+            "or run single-process training."
+        )
+
+
+def _validate_fast_state_batch_semantics(cfg: DictConfig) -> None:
+    if not bool(cfg.train.get("use_fast_state", False)):
+        return
+    data_cfg = cfg.get("data")
+    if data_cfg is None:
+        return
+    batch_size_raw = data_cfg.get("batch_size", 1)
+    try:
+        batch_size = int(batch_size_raw)
+    except (TypeError, ValueError):
+        return
+    if batch_size <= 1:
+        return
+    msg = (
+        "train.use_fast_state=true currently shares CMS/TITAN fast state across the batch. "
+        "For strict per-context semantics, set data.batch_size=1."
+    )
+    if bool(cfg.train.get("fail_if_paper_faithful_disabled", False)):
+        raise RuntimeError(msg)
+    print(f"[train] {msg}")
+
+
 def run_training_loop(
     cfg: DictConfig,
     *,
@@ -325,6 +401,8 @@ def run_training_loop(
     distributed: bool = False,
     dist_ctx: DistributedContext | None = None,
 ) -> Dict[str, float]:
+    _validate_distributed_config(cfg, distributed)
+    _validate_fast_state_batch_semantics(cfg)
     model = build_model_from_cfg(cfg.model).to(device)
     train_seed = cfg.train.get("seed")
     deterministic = cfg.train.get("deterministic", False)
@@ -371,11 +449,25 @@ def run_training_loop(
     per_layer_teach = bool(cfg.train.get("per_layer_teach_signal", False))
     online_updates = bool(cfg.train.get("online_updates", False))
     online_chunk_size = int(cfg.train.get("online_chunk_size", 0) or 0)
+    use_fast_state = bool(cfg.train.get("use_fast_state", False))
+    fail_if_faithful_disabled = bool(cfg.train.get("fail_if_paper_faithful_disabled", False))
     if distributed and per_layer_teach:
-        print("[train] per_layer_teach_signal disabled under DDP (uses base model methods)")
+        msg = "[train] per_layer_teach_signal disabled under DDP (uses base model methods)"
+        if fail_if_faithful_disabled:
+            raise RuntimeError(
+                f"{msg}. Set train.fail_if_paper_faithful_disabled=false to allow the fallback, "
+                "or run single-process training."
+            )
+        print(msg)
         per_layer_teach = False
     if distributed and online_updates:
-        print("[train] online_updates disabled under DDP (uses base model methods)")
+        msg = "[train] online_updates disabled under DDP (uses base model methods)"
+        if fail_if_faithful_disabled:
+            raise RuntimeError(
+                f"{msg}. Set train.fail_if_paper_faithful_disabled=false to allow the fallback, "
+                "or run single-process training."
+            )
+        print(msg)
         online_updates = False
     step_iter = iter(dataloader)
     epoch = 0
@@ -390,6 +482,12 @@ def run_training_loop(
             step_iter = iter(dataloader)
             batch = next(step_iter)
         tokens = batch.to(device)
+        fast_state = None
+        if use_fast_state:
+            init_fn = getattr(base_model, "init_fast_state", None)
+            if not callable(init_fn):
+                raise ValueError("train.use_fast_state=true requires model.init_fast_state()")
+            fast_state = init_fn()
         _apply_teach_schedule(base_model, cfg, step)
         update_metrics: Dict[str, float] = {}
         if online_updates and hasattr(base_model, "forward_with_block_outputs"):
@@ -401,14 +499,21 @@ def run_training_loop(
             if chunk_size <= 0:
                 inferred = _infer_online_chunk_size(base_model)
                 chunk_size = inferred if inferred is not None else tokens.size(1)
+            if chunk_size < 2:
+                # Next-token CE needs at least 2 tokens per chunk. Clamp to avoid a silent no-op
+                # when configs infer update_period=1.
+                print(f"[train] online_chunk_size={chunk_size} is too small; clamping to 2")
+                chunk_size = 2
             for start in range(0, tokens.size(1), chunk_size):
                 end = min(start + chunk_size, tokens.size(1))
                 chunk_tokens = tokens[:, start:end]
                 if chunk_tokens.size(1) <= 1:
                     continue
                 with autocast_factory():
-                    logits, _pre, block_outputs = base_model.forward_with_block_outputs(
-                        chunk_tokens
+                    logits, _pre, block_outputs = (
+                        base_model.forward_with_block_outputs(chunk_tokens, fast_state=fast_state)
+                        if fast_state is not None
+                        else base_model.forward_with_block_outputs(chunk_tokens)
                     )
                     loss = torch.nn.functional.cross_entropy(
                         logits[:, :-1].reshape(-1, logits.size(-1)),
@@ -427,9 +532,17 @@ def run_training_loop(
                 loss.backward()
                 with torch.no_grad():
                     if per_layer_teach:
-                        base_model(chunk_tokens, teach_signals=teach_signals)
+                        base_model(
+                            chunk_tokens,
+                            teach_signals=teach_signals,
+                            fast_state=fast_state,
+                        )
                     else:
-                        base_model(chunk_tokens, teach_signal=teach_signal)
+                        base_model(
+                            chunk_tokens,
+                            teach_signal=teach_signal,
+                            fast_state=fast_state,
+                        )
                     if hasattr(base_model, "pop_update_metrics"):
                         update_metrics = base_model.pop_update_metrics()
                 total_loss += loss.item() * (chunk_tokens.size(1) - 1)
@@ -441,13 +554,20 @@ def run_training_loop(
         else:
             with autocast_factory():
                 if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
-                    logits, _pre, block_outputs = base_model.forward_with_block_outputs(tokens)
+                    logits, _pre, block_outputs = (
+                        base_model.forward_with_block_outputs(tokens, fast_state=fast_state)
+                        if fast_state is not None
+                        else base_model.forward_with_block_outputs(tokens)
+                    )
                     loss = torch.nn.functional.cross_entropy(
                         logits[:, :-1].reshape(-1, logits.size(-1)),
                         tokens[:, 1:].reshape(-1),
                     )
                 else:
-                    logits = model(tokens)
+                    if fast_state is not None:
+                        logits = model(tokens, fast_state=fast_state)
+                    else:
+                        logits = model(tokens)
                     loss = torch.nn.functional.cross_entropy(
                         logits[:, :-1].reshape(-1, logits.size(-1)),
                         tokens[:, 1:].reshape(-1),
@@ -463,11 +583,11 @@ def run_training_loop(
                     teach_signal_norm = float(
                         torch.stack([sig.norm(dim=-1).mean() for sig in teach_signals]).mean()
                     )
-                    base_model(tokens, teach_signals=teach_signals)
+                    base_model(tokens, teach_signals=teach_signals, fast_state=fast_state)
                 else:
                     teach_signal = compute_teach_signal(base_model, logits, tokens)
                     teach_signal_norm = teach_signal.norm(dim=-1).mean().item()
-                    base_model(tokens, teach_signal=teach_signal)
+                    base_model(tokens, teach_signal=teach_signal, fast_state=fast_state)
                 if hasattr(base_model, "pop_update_metrics"):
                     update_metrics = base_model.pop_update_metrics()
         if step % log_interval == 0:
@@ -541,10 +661,16 @@ def _make_autocast_factory(device: torch.device, mp_cfg: dict | None):
     if not mp_cfg or not mp_cfg.get("enabled", False):
         return lambda: nullcontext()
     dtype = _resolve_autocast_dtype(mp_cfg.get("dtype", "bf16"))
-    device_type = "cuda" if device.type == "cuda" else "cpu"
+    device_type = device.type
+    if device_type not in {"cuda", "cpu", "mps"}:
+        device_type = "cpu"
 
     def factory():
-        return torch.autocast(device_type=device_type, dtype=dtype)
+        try:
+            return torch.autocast(device_type=device_type, dtype=dtype)
+        except Exception as err:  # pragma: no cover - device/dtype support varies by backend
+            print(f"[autocast] disabled for device_type={device_type} dtype={dtype}: {err}")
+            return nullcontext()
 
     return factory
 
@@ -567,11 +693,38 @@ def _build_optimizer(
         optimizer_cfg = optimizer_cfg_raw
     else:
         optimizer_cfg = cast(DictConfig, OmegaConf.create(optimizer_cfg_raw or {}))
+    param_policy_raw = optimizer_cfg.get("param_policy")
+    if param_policy_raw is None:
+        outer_updates_memory_modules = optimizer_cfg.get("outer_updates_memory_modules")
+        if outer_updates_memory_modules is None:
+            param_policy = "all"
+        else:
+            param_policy = "all" if bool(outer_updates_memory_modules) else "exclude_memory"
+    else:
+        param_policy = str(param_policy_raw).strip().lower()
+    named_params = _select_outer_named_parameters(model, param_policy)
+    if not named_params:
+        raise ValueError(
+            f"No trainable parameters selected for optim.param_policy={param_policy!r}. "
+            "Check freeze_backbone, requires_grad flags, or adjust the policy."
+        )
     optim_type = str(optimizer_cfg.get("type", "adamw")).lower()
     if optim_type == "muon":
-        return _build_muon_optimizer(model, optimizer_cfg, device=device)
+        return _build_muon_optimizer(
+            model,
+            optimizer_cfg,
+            device=device,
+            named_params=named_params,
+            param_policy=param_policy,
+        )
     if optim_type == "m3":
-        return _build_m3_optimizer(model, optimizer_cfg, device=device)
+        return _build_m3_optimizer(
+            model,
+            optimizer_cfg,
+            device=device,
+            named_params=named_params,
+            param_policy=param_policy,
+        )
     lr = optimizer_cfg.get("lr", 1e-3)
     betas = optimizer_cfg.get("betas", (0.9, 0.999))
     weight_decay = optimizer_cfg.get("weight_decay", 0.0)
@@ -584,11 +737,17 @@ def _build_optimizer(
     kwargs = {"lr": lr, "betas": betas, "weight_decay": weight_decay}
     if fused:
         kwargs["fused"] = True
-    return torch.optim.AdamW(model.parameters(), **kwargs)
+    params = [param for _, param in named_params]
+    return torch.optim.AdamW(params, **kwargs)
 
 
 def _build_muon_optimizer(
-    model: torch.nn.Module, optimizer_cfg: DictConfig, *, device: torch.device
+    model: torch.nn.Module,
+    optimizer_cfg: DictConfig,
+    *,
+    device: torch.device,
+    named_params: list[tuple[str, torch.nn.Parameter]] | None = None,
+    param_policy: str | None = None,
 ):
     if not hasattr(torch.optim, "Muon"):
         raise RuntimeError("torch.optim.Muon is not available in this PyTorch build")
@@ -606,7 +765,8 @@ def _build_muon_optimizer(
         fused = bool(fused_cfg)
     muon_params: list[torch.nn.Parameter] = []
     adamw_params: list[torch.nn.Parameter] = []
-    for name, param in model.named_parameters():
+    source = named_params if named_params is not None else model.named_parameters()
+    for name, param in source:
         if not param.requires_grad:
             continue
         if _is_muon_candidate(name, param):
@@ -640,11 +800,17 @@ def _build_muon_optimizer(
         muon_elems,
         adamw_elems,
         primary_name="muon",
+        param_policy=param_policy,
     )
 
 
 def _build_m3_optimizer(
-    model: torch.nn.Module, optimizer_cfg: DictConfig, *, device: torch.device
+    model: torch.nn.Module,
+    optimizer_cfg: DictConfig,
+    *,
+    device: torch.device,
+    named_params: list[tuple[str, torch.nn.Parameter]] | None = None,
+    param_policy: str | None = None,
 ):
     lr = optimizer_cfg.get("lr", 1e-3)
     weight_decay = optimizer_cfg.get("weight_decay", 0.01)
@@ -664,7 +830,8 @@ def _build_m3_optimizer(
 
     m3_params: list[torch.nn.Parameter] = []
     adamw_params: list[torch.nn.Parameter] = []
-    for name, param in model.named_parameters():
+    source = named_params if named_params is not None else model.named_parameters()
+    for name, param in source:
         if not param.requires_grad:
             continue
         if _is_muon_candidate(name, param):
@@ -703,7 +870,32 @@ def _build_m3_optimizer(
         m3_elems,
         adamw_elems,
         primary_name="m3",
+        param_policy=param_policy,
     )
+
+
+def _select_outer_named_parameters(
+    model: torch.nn.Module, param_policy: str
+) -> list[tuple[str, torch.nn.Parameter]]:
+    policy = str(param_policy).strip().lower()
+    trainable: list[tuple[str, torch.nn.Parameter]] = [
+        (name, param) for name, param in model.named_parameters() if param.requires_grad
+    ]
+    if policy in {"all", "full"}:
+        return trainable
+    if policy in {"exclude_memory", "no_memory"}:
+        return [(name, param) for name, param in trainable if not _is_memory_param_name(name)]
+    if policy in {"only_memory", "memory_only"}:
+        return [(name, param) for name, param in trainable if _is_memory_param_name(name)]
+    raise ValueError(
+        f"Unsupported optim.param_policy={param_policy!r}. "
+        "Expected one of ['all', 'exclude_memory', 'only_memory']."
+    )
+
+
+def _is_memory_param_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(token in lowered for token in (".cms.", ".titan_memory.", ".selfmod."))
 
 
 def _is_muon_candidate(name: str, param: torch.nn.Parameter) -> bool:
@@ -724,12 +916,14 @@ class _HybridOptimizer:
         secondary_param_elems: int,
         *,
         primary_name: str = "muon",
+        param_policy: str | None = None,
     ):
         self.primary_opt = primary_opt
         self.secondary_opt = secondary_opt
         self.primary_param_elems = primary_param_elems
         self.secondary_param_elems = secondary_param_elems
         self.primary_name = primary_name
+        self.param_policy = param_policy
 
     def zero_grad(self) -> None:
         if self.primary_opt:
@@ -773,7 +967,7 @@ class _HybridOptimizer:
 
 def _log_run_features(
     logger: BaseLogger,
-    model: HOPEModel,
+    model: torch.nn.Module,
     cfg: DictConfig,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
@@ -788,6 +982,33 @@ def _log_run_features(
         "attention.flash_enabled": _detect_flash_attention(model),
         "device": device.type,
     }
+    optimizer_cfg_raw = cfg.get("optim")
+    if isinstance(optimizer_cfg_raw, DictConfig):
+        optimizer_cfg = optimizer_cfg_raw
+    else:
+        optimizer_cfg = cast(DictConfig, OmegaConf.create(optimizer_cfg_raw or {}))
+    param_policy_raw = optimizer_cfg.get("param_policy")
+    if param_policy_raw is None:
+        outer_updates_memory_modules = optimizer_cfg.get("outer_updates_memory_modules")
+        if outer_updates_memory_modules is None:
+            param_policy = "all"
+        else:
+            param_policy = "all" if bool(outer_updates_memory_modules) else "exclude_memory"
+    else:
+        param_policy = str(param_policy_raw).strip().lower()
+    try:
+        selected = _select_outer_named_parameters(model, param_policy)
+        total_elems = int(sum(param.numel() for _, param in selected))
+        memory_elems = int(
+            sum(param.numel() for name, param in selected if _is_memory_param_name(name))
+        )
+        features["optim.param_policy"] = param_policy
+        features["optim.param_policy_param_elems"] = total_elems
+        features["optim.param_policy_memory_param_elems"] = memory_elems
+        features["optim.param_policy_non_memory_param_elems"] = total_elems - memory_elems
+    except Exception as err:  # pragma: no cover - purely diagnostic
+        features["optim.param_policy"] = param_policy
+        features["optim.param_policy_error"] = str(err)
     split_fn = getattr(optimizer, "get_param_split", None)
     if callable(split_fn):
         split = split_fn()
@@ -797,7 +1018,7 @@ def _log_run_features(
     print(f"[train] run_features {features}")
 
 
-def _detect_flash_attention(model: HOPEModel) -> bool:
+def _detect_flash_attention(model: torch.nn.Module) -> bool:
     blocks = getattr(model, "blocks", [])
     for block in blocks:
         attn = getattr(block, "attn", None)

@@ -43,6 +43,17 @@ uv run python scripts/data/train_tokenizer.py \
 
 The manifest pulls small samples from FineWeb (RefinedWeb proxy), Wikimedia/Wikipedia, AllenAI C4, SlimPajama, and codeparrot code datasets. Outputs live in `artifacts/tokenizer/refinedweb_mix/`.
 
+### Sample pipeline note (hard vocab limit)
+When training a tokenizer on **tiny local samples**, SentencePiece can fail if it cannot reach the requested `--vocab-size` (default `hard_vocab_limit=true`).
+
+For the repo’s sample pipeline (`scripts/data/run_sample.sh`), we disable this check:
+
+```bash
+uv run python scripts/data/train_tokenizer.py ... --no-hard-vocab-limit
+```
+
+For “paper-faithful” runs, prefer training on a sufficiently large corpus and keep the default `--hard-vocab-limit`.
+
 ### Tokenizer checksum
 Record the checksum of every published tokenizer so collaborators can verify integrity before launching runs.
 

@@ -51,10 +51,9 @@ class SelfAttention(nn.Module):
         attn_inp = x
         if self.local_conv is not None:
             kernel = self.local_conv.kernel_size[0]
-            left_pad = (kernel - 1) // 2
-            right_pad = kernel - 1 - left_pad
             attn_inp = attn_inp.transpose(1, 2)
-            attn_inp = F.pad(attn_inp, (left_pad, right_pad))
+            # Causal depthwise conv: only attends to past tokens.
+            attn_inp = F.pad(attn_inp, (kernel - 1, 0))
             attn_inp = self.local_conv(attn_inp).transpose(1, 2)
         q, k, v = self._compute_qkv(attn_inp)
         attn_output = self._scaled_dot_product_attn(q, k, v)

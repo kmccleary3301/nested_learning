@@ -96,6 +96,13 @@ def main(
     vocab_size: int = typer.Option(32_000, help="SentencePiece vocabulary size."),
     model_type: str = typer.Option("unigram", help="SentencePiece model type."),
     character_coverage: float = typer.Option(0.9995, help="Character coverage target."),
+    hard_vocab_limit: bool = typer.Option(
+        True,
+        help=(
+            "Require the trained vocab to match vocab_size exactly. "
+            "Disable for tiny sample corpora where vocab_size is unattainable."
+        ),
+    ),
     output_dir: Path = typer.Option(
         Path("artifacts/tokenizer"), help="Directory for tokenizer artifacts."
     ),
@@ -140,6 +147,7 @@ def main(
         vocab_size=vocab_size,
         model_type=model_type,
         character_coverage=character_coverage,
+        hard_vocab_limit=hard_vocab_limit,
         # SentencePiece requires input_sentence_size <= 0 or > 100.
         input_sentence_size=(total_samples if total_samples > 100 else 0),
         shuffle_input_sentence=True,

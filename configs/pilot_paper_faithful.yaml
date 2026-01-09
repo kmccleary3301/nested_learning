@@ -1,0 +1,32 @@
+defaults:
+  - /pilot
+  - _self_
+
+model:
+  # Paper-faithful: treat "surprise" as the (scaled) teach signal itself, without threshold gating.
+  surprise_threshold: null
+  # Paper updates on the last (possibly partial) chunk; enable flush for non-multiple seq lengths.
+  cms_flush_partial_at_end: true
+  # Paper: q is non-adaptive and uses a fixed projection.
+  self_mod_adaptive_q: false
+  # Paper: local causal conv in the HOPE self-mod module.
+  self_mod_local_conv_window: 4
+
+data:
+  # Paper-faithful semantics: CMS/TITAN fast state is per-context; this repo currently treats
+  # each *batch* as a single shared context when batch_size>1.
+  batch_size: 1
+
+train:
+  # Paper: re-initialize fast memories per context (sequence).
+  use_fast_state: true
+  # Fail fast if DDP would silently disable paper-critical features.
+  fail_if_paper_faithful_disabled: true
+
+optim:
+  # Ensure meta-learning updates include memory module initial states (paper §8.2).
+  param_policy: all
+
+logging:
+  run_name: pilot-paper-faithful
+  path: logs/pilot_paper_faithful_metrics.json

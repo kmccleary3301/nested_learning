@@ -1,0 +1,18 @@
+defaults:
+  - /pilot_paper_faithful
+  - _self_
+
+model:
+  block_variant: hope_selfmod
+  # Chunk update cadence (paper §8.2): other memories update more often than M_memory.
+  self_mod_chunk_size: 8
+  self_mod_chunk_size_memory: 64
+  self_mod_use_skip: false
+
+train:
+  checkpoint:
+    dir: artifacts/checkpoints/pilot_selfmod_paper_faithful
+
+logging:
+  run_name: pilot-selfmod-paper-faithful
+  path: logs/pilot_selfmod_paper_faithful_metrics.json

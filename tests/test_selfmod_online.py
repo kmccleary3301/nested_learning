@@ -5,7 +5,7 @@ from nested_learning.hope.block import HOPESelfModBlock, HOPESelfModBlockConfig
 from nested_learning.levels import LevelSpec
 
 
-def test_selfmod_updates_without_teach_signal() -> None:
+def test_selfmod_updates_on_update_pass_even_with_zero_teach_signal() -> None:
     cfg = HOPESelfModBlockConfig(
         dim=8,
         cms_levels=[LevelSpec(name="fast", update_period=1)],
@@ -23,7 +23,8 @@ def test_selfmod_updates_without_teach_signal() -> None:
     )
     assert fast_state.selfmod_state is not None
     x = torch.randn(1, 4, 8)
+    teach = torch.zeros_like(x)
     before = fast_state.selfmod_state.memory.w1.clone()
-    _ = block(x, fast_state=fast_state)
+    _ = block(x, teach_signal=teach, fast_state=fast_state)
     after = fast_state.selfmod_state.memory.w1
     assert not torch.allclose(before, after)

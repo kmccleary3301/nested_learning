@@ -74,6 +74,7 @@ if [[ ! -f "${TOKENIZER_MODEL}" ]]; then
   uv run python scripts/data/train_tokenizer.py \
     --manifest configs/data/refinedweb_mixture_filtered.yaml \
     --vocab-size 32000 \
+    --no-hard-vocab-limit \
     --output-dir "${TOKENIZER_DIR}" \
     --log-file data/mixtures/refinedweb_mix_tokenizer_sample.json
 fi

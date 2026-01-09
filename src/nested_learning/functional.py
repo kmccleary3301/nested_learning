@@ -9,6 +9,22 @@ from torch.func import functional_call
 ParamDict = Dict[str, torch.Tensor]
 
 
+def params_with_deltas(module: nn.Module, deltas: ParamDict) -> ParamDict:
+    params: ParamDict = {}
+    missing: list[str] = []
+    for name, param in module.named_parameters():
+        delta = deltas.get(name)
+        if delta is None:
+            missing.append(name)
+            continue
+        params[name] = param + delta
+    if missing:
+        raise KeyError(
+            f"Missing fast-state delta(s) for {module.__class__.__name__}: {sorted(missing)[:10]}"
+        )
+    return params
+
+
 def module_buffers(module: nn.Module) -> ParamDict:
     return {name: buf for name, buf in module.named_buffers()}
 
@@ -21,6 +37,15 @@ def call_with_params(
 ) -> Any:
     buffers = module_buffers(module)
     return functional_call(module, (params, buffers), args, kwargs, strict=True)
+
+
+def call_with_deltas(
+    module: nn.Module,
+    deltas: ParamDict,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    return call_with_params(module, params_with_deltas(module, deltas), *args, **kwargs)
 
 
 def require_grad_params(params: ParamDict) -> ParamDict:
