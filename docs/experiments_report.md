@@ -174,16 +174,18 @@ At this scale, memorization neither helps nor hurts, but the infrastructure is i
 ### 3.5 HOPE Pilot Relaunch (toward step 250 k, surprise-gated)
 
 - **Config:** `configs/pilot.yaml` with Muon outer optimizer, `nl_l2_precond` inner variant, `teach_scale=0.10`, `surprise_threshold=0.02`.
-- **Run:** resumed from step 231 k on `cuda:1` (`logs/pilot_relaunch_surprise.log`, PID 552171).
-- **Checkpoints:** intermediate relaunch snapshots under `artifacts/checkpoints/pilot_relaunch/` (e.g., `step_245000.pt`), verified via `scripts/checkpoint/verify.py`.
-- **Status:** training in progress while preparing this report; full eval suite will be re-run once the target 250 k checkpoint lands.
+- **Checkpoint:** `artifacts/checkpoints/pilot_relaunch/step_477000.pt` (verified via `scripts/checkpoint/verify.py`; sidecars stored alongside the checkpoint).
+- **Eval suite:** `eval/zeroshot_pilot.json`, `eval/niah_pilot.json`, `eval/continual_pilot.json`, `eval/passkey_pilot.json`, `eval/pg19_pilot.json`.
+- **Report:** `reports/checkpoints/pilot_relaunch_step477000.md`.
+- **Note:** with `surprise_threshold=0.02` the memorize harness recorded 0 update events on these short prompts, so memorization deltas are ≈0 (expected for this gated configuration).
 
 ### 3.6 TITAN Long Baseline Relaunch (toward step 25 k)
 
 - **Config:** `configs/mid_titan_baseline.yaml`, `teach_scale=0.10`, `surprise_threshold=0.02`.
-- **Run:** resumed from step 7 k on `cuda:0` (`logs/titan_relaunch_surprise.log`, PID 554029).
-- **Checkpoints:** long-run snapshots under `artifacts/checkpoints/mid_titan_long/` (e.g., `step_016000.pt`), with integrity checked by `scripts/checkpoint/verify.py`.
-- **Status:** training in progress; eval suite (zero-shot, NIAH, continual, passkey, PG‑19) queued for the 16 k and 25 k checkpoints using the same memorize-path/gating settings as HOPE.
+- **Checkpoint:** `artifacts/checkpoints/mid_titan_long/step_032000.pt` (verified via `scripts/checkpoint/verify.py`; sidecars stored alongside the checkpoint).
+- **Eval suite:** `eval/zeroshot_titan.json`, `eval/niah_titan.json`, `eval/continual_titan.json`, `eval/passkey_titan.json`, `eval/pg19_titan.json`.
+- **Report:** `reports/checkpoints/titan_long_step32000.md`.
+- **Note:** with `surprise_threshold=0.02` the memorize harness recorded 0 update events on these short prompts, so memorization deltas are ≈0 (expected for this gated configuration).
 
 ---
 

@@ -55,11 +55,38 @@ class LevelOptimizerManager:
             return 0.0
         params = tuple(param for _, param in named_params)
         grads = torch.autograd.grad(loss, params, retain_graph=False, allow_unused=True)
+        grads_dict: Dict[str, torch.Tensor] = {}
+        for (name, _), grad in zip(named_params, grads, strict=True):
+            if grad is None:
+                continue
+            grads_dict[name] = grad
+        return self.apply_module_grads(
+            level,
+            module,
+            grads_dict,
+            context=context,
+            force=True,
+        )
+
+    def apply_module_grads(
+        self,
+        level: str,
+        module: nn.Module,
+        grads: Dict[str, torch.Tensor],
+        *,
+        context: torch.Tensor | None = None,
+        force: bool = False,
+    ) -> float:
+        if (not force) and (not self.should_update(level)):
+            return 0.0
         optimizer = self.optimizers[level]
         lr = self.learning_rates[level]
         total_norm = 0.0
         with torch.no_grad():
-            for (name, param), grad in zip(named_params, grads, strict=True):
+            for name, param in module.named_parameters():
+                if not param.requires_grad:
+                    continue
+                grad = grads.get(name)
                 if grad is None:
                     continue
                 update = optimizer(grad, context=context, param_key=name)

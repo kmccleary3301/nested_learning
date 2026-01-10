@@ -1421,7 +1421,9 @@ class HOPEBlock(nn.Module):
         with torch.enable_grad():
             query = attn_out.detach()
             target = (modifier - teach_signal.detach()).detach()
-            prediction = self.titan_memory(query)
+            base_params = {name: param for name, param in self.titan_memory.named_parameters()}
+            params_req = require_grad_params(base_params)
+            prediction = call_with_params(self.titan_memory, params_req, query)
             loss_terms = F.mse_loss(prediction, target, reduction="none")
             active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
             mask = active.float()
@@ -1430,8 +1432,19 @@ class HOPEBlock(nn.Module):
                 mask = mask * (norms >= self.surprise_threshold).float()
             loss = (loss_terms * mask).sum() / mask.sum().clamp(min=1.0)
 
-        magnitude = self.level_manager.optimize(
-            level_name, self.titan_memory, loss, context=context_vec
+        grads = torch.autograd.grad(
+            loss,
+            tuple(params_req.values()),
+            retain_graph=False,
+            allow_unused=True,
+        )
+        grads_dict = grads_to_dict(params_req, grads)
+        magnitude = self.level_manager.apply_module_grads(
+            level_name,
+            self.titan_memory,
+            grads_dict,
+            context=context_vec,
+            force=True,
         )
         extra_metrics = self.level_manager.pop_last_metrics(level_name)
         stats = {"grad_norm": magnitude, "gate_hit": 1.0}

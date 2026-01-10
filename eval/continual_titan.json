@@ -1,11 +1,73 @@
 [
   {
-    "checkpoint": "artifacts/pilot_release/checkpoint.pt",
+    "checkpoint": "artifacts/checkpoints/mid_titan_long/step_032000.pt",
     "segment_losses": {
-      "refinedweb_2018": 12.866062828705969,
-      "wikipedia_sample": 11.924065576840754,
-      "c4_sample": 12.26545682485323,
-      "redpajama_sample": 13.79434186185176
+      "refinedweb_2018": 8.536108780653743,
+      "wikipedia_sample": 8.046991647619556,
+      "c4_sample": 7.78577950136069,
+      "redpajama_sample": 8.107161848512414
+    },
+    "segment_baseline_losses": {
+      "refinedweb_2018": 8.536108780653743,
+      "wikipedia_sample": 8.046991647619556,
+      "c4_sample": 7.78577950136069,
+      "redpajama_sample": 8.107161848512414
+    },
+    "segment_memorize_delta": {
+      "refinedweb_2018": 0.0,
+      "wikipedia_sample": 0.0,
+      "c4_sample": 0.0,
+      "redpajama_sample": 0.0
+    },
+    "memorize_stats": {
+      "refinedweb_2018": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      },
+      "wikipedia_sample": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      },
+      "c4_sample": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      },
+      "redpajama_sample": {
+        "titan_mem_updates": 0.0,
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
+      }
     }
   }
 ]

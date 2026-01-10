@@ -56,11 +56,12 @@
 
 ## Stage 2 – Execution Sprint (Nov 17)
 - [x] Relaunch HOPE pilot run on `cuda:1` (Muon + surprise gating) and produce fresh checkpoints/logs.
-  - Status (Nov 18): run completed/terminated by user request to free GPUs. Last logged train step ≈246 150 (global_step ≈477 000); latest checkpoint on disk `artifacts/checkpoints/pilot_relaunch/step_477000.pt` (to be verified/packaged later).
-- [ ] Package the new pilot checkpoint via `scripts/package_pilot_release.sh` and rerun the full eval suite (zeroshot/NIAH/continual/passkey/PG19) with memorize path/threshold metadata.
-  - Ready: checkpoint report stub at `reports/checkpoints/pilot_relaunch_step245000.md` (will be updated to final step); eval command to use `MEMORIZE_PATHS=titan,cms_fast`, `MEMORIZE_SURPRISE_THRESHOLD=0.02`.
+  - Status (Jan 9): relaunch stopped at `artifacts/checkpoints/pilot_relaunch/step_477000.pt` and verified via `scripts/checkpoint/verify.py`.
+- [x] Package the new pilot checkpoint via `scripts/package_pilot_release.sh` and rerun the full eval suite (zeroshot/NIAH/continual/passkey/PG19) with memorize path/threshold metadata.
+  - Done: `reports/checkpoints/pilot_relaunch_step477000.md` + `eval/*_pilot.json` and refreshed `artifacts/pilot_release/`.
 - [x] Restart TITAN long baseline, mirror the eval suite, and record surprise gating stats.
-  - Status (Nov 18): long run finished earlier (PID exited). Latest checkpoint: `artifacts/checkpoints/mid_titan_long/step_032000.pt` (global_step 32 000, to be verified/packaged).
+  - Status (Jan 9): packaged + evaluated `artifacts/checkpoints/mid_titan_long/step_032000.pt` (see `reports/checkpoints/titan_long_step32000.md` and `eval/*_titan.json`).
 - [ ] Run the mid-scale FSDP config (`configs/hope/mid_fsdp.yaml`), monitor VRAM, and archive checkpoints/logs.
-- [ ] Update `reports/checkpoints/` + `reports/ablations.md` with the new HOPE/TITAN results (include memorize paths/surprise thresholds).
-- [ ] Refresh `docs/stage2_progress.md`, `docs/experiments_report.md`, and `docs/stage2_plan.md` with the latest execution status and next scaling steps.
+  - Status (Jan 10): 2×GPU FSDP smoke runs (synthetic) complete, including update pass and checkpoint saving (FSDP ranks now all participate in FULL_STATE_DICT gathering).
+- [x] Update `reports/checkpoints/` + `reports/ablations.md` with the new HOPE/TITAN results (include memorize paths/surprise thresholds).
+- [x] Refresh `docs/stage2_progress.md`, `docs/experiments_report.md`, and `docs/stage2_plan.md` with the latest execution status and next scaling steps.

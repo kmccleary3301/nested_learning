@@ -1,8 +1,8 @@
 {
   "samples": 64,
   "filler_sentences": 256,
-  "accuracy_base": 0.4375,
-  "accuracy_memorize": 0.4375,
+  "accuracy_base": 0.46875,
+  "accuracy_memorize": 0.46875,
   "accuracy_delta": 0.0,
   "path_stats": {
     "titan_mem_updates": 0.0,
@@ -16,6 +16,6 @@
     "cms_ultra_updates": 0.0,
     "cms_ultra_update_events": 0.0
   },
-  "memorize_paths": "titan,cms_fast",
+  "memorize_paths": "titan",
   "memorize_surprise_threshold": 0.02
 }

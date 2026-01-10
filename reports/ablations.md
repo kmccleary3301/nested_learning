@@ -143,3 +143,9 @@ fields through `ModelConfig`; this is covered by `tests/test_build_model_from_cf
 | Continual CE (RefinedWeb / Wiki / C4 / RedPajama) | 8.06 / 7.79 / 7.68 / 7.95 | 8.36 / 8.12 / 7.85 / 8.11 | `eval/continual_pilot_step230000.json` vs `eval/continual_titan_step25000.json`. |
 
 Use these values as the reference when logging ablations; refresh the table whenever a new HOPE or TITAN checkpoint is evaluated.
+
+### Additional snapshots (surprise-gated relaunch)
+- **HOPE pilot relaunch (step 477k):** `reports/checkpoints/pilot_relaunch_step477000.md` with eval outputs `eval/*_pilot.json`.
+- **TITAN long relaunch (step 32k):** `reports/checkpoints/titan_long_step32000.md` with eval outputs `eval/*_titan.json`.
+
+These runs use `model.surprise_threshold=0.02` and therefore show ≈0 memorization deltas on short eval prompts (the gate did not trigger update events). Treat them as “pipeline / plumbing” validations rather than evidence of long-context advantages.

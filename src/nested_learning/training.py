@@ -264,6 +264,8 @@ def compute_teach_signal(
     residual = residual / denom
 
     head_weight = model.lm_head.weight.detach()
+    if head_weight.dtype != residual.dtype:
+        head_weight = head_weight.to(dtype=residual.dtype)
     grad = residual @ head_weight
     pad = torch.zeros(
         grad.size(0),

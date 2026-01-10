@@ -1,5 +1,5 @@
 defaults:
-  - /hope/target
+  - target
   - _self_
 
 model:

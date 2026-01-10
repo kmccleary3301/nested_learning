@@ -33,6 +33,8 @@ PASSKEY_FILLER=${PASSKEY_FILLER:-256}
 PG19_SAMPLES=${PG19_SAMPLES:-32}
 CONT_PLOT_SEGMENT=${CONT_PLOT_SEGMENT:-refinedweb_2018}
 MEMORIZE_PATHS=${MEMORIZE_PATHS:-titan,cms_fast}
+HOPE_MEMORIZE_PATHS=${HOPE_MEMORIZE_PATHS:-${MEMORIZE_PATHS}}
+TITAN_MEMORIZE_PATHS=${TITAN_MEMORIZE_PATHS:-titan}
 MEMORIZE_SURPRISE_THRESHOLD=${MEMORIZE_SURPRISE_THRESHOLD:-0.02}
 
 resolve_checkpoint() {
@@ -66,6 +68,7 @@ run_zero_shot() {
   local config=$1
   local ckpt=$2
   local tag=$3
+  local memorize_paths=$4
   UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=copy uv run python scripts/eval/zeroshot.py \
     --config "${config}" \
     --checkpoint "${ckpt}" \
@@ -77,7 +80,7 @@ run_zero_shot() {
     --memorize \
     --memorize-steps 2 \
     --memorize-use-correct-answer \
-    --memorize-paths "${MEMORIZE_PATHS}" \
+    --memorize-paths "${memorize_paths}" \
     --memorize-surprise-threshold "${MEMORIZE_SURPRISE_THRESHOLD}"
 }
 
@@ -85,6 +88,7 @@ run_niah() {
   local config=$1
   local ckpt=$2
   local tag=$3
+  local memorize_paths=$4
   local args=()
   for ctx in ${NIAH_CONTEXTS}; do
     args+=(--context-lengths "${ctx}")
@@ -100,14 +104,15 @@ run_niah() {
     --memorize \
     --memorize-steps 2 \
     --memorize-use-correct-answer \
-    --memorize-paths "${MEMORIZE_PATHS}" \
+    --memorize-paths "${memorize_paths}" \
     --memorize-surprise-threshold "${MEMORIZE_SURPRISE_THRESHOLD}"
 }
 
 run_continual() {
   local config=$1
   local tag=$2
-  shift 2
+  local memorize_paths=$3
+  shift 3
   local ckpts=("$@")
   if [[ ${#ckpts[@]} -eq 0 ]]; then
     echo "[eval] No checkpoints provided for continual eval (${tag}); skipping."
@@ -124,7 +129,7 @@ run_continual() {
     --output "eval/continual_${tag}.json" \
     --memorize \
     --memorize-steps 1 \
-    --memorize-paths "${MEMORIZE_PATHS}" \
+    --memorize-paths "${memorize_paths}" \
     --memorize-surprise-threshold "${MEMORIZE_SURPRISE_THRESHOLD}"
   if [[ ${#ckpts[@]} -gt 1 ]]; then
     local plot_target="reports/plots/continual_${tag}_${CONT_PLOT_SEGMENT}.png"
@@ -141,6 +146,7 @@ run_passkey() {
   local config=$1
   local ckpt=$2
   local tag=$3
+  local memorize_paths=$4
   UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=copy uv run python scripts/eval/passkey.py \
     --config "${config}" \
     --checkpoint "${ckpt}" \
@@ -151,7 +157,7 @@ run_passkey() {
     --output "eval/passkey_${tag}.json" \
     --memorize \
     --memorize-steps 2 \
-    --memorize-paths "${MEMORIZE_PATHS}" \
+    --memorize-paths "${memorize_paths}" \
     --memorize-surprise-threshold "${MEMORIZE_SURPRISE_THRESHOLD}"
 }
 
@@ -159,6 +165,7 @@ run_pg19() {
   local config=$1
   local ckpt=$2
   local tag=$3
+  local memorize_paths=$4
   UV_CACHE_DIR=/tmp/uv-cache UV_LINK_MODE=copy uv run python scripts/eval/pg19_perplexity.py \
     --config "${config}" \
     --checkpoint "${ckpt}" \
@@ -167,25 +174,25 @@ run_pg19() {
     --device "${DEVICE}" \
     --output "eval/pg19_${tag}.json" \
     --memorize \
-    --memorize-paths "${MEMORIZE_PATHS}" \
+    --memorize-paths "${memorize_paths}" \
     --memorize-surprise-threshold "${MEMORIZE_SURPRISE_THRESHOLD}"
 }
 
 echo "[eval] Running suite for HOPE (${HOPE_CHECKPOINT})"
-run_zero_shot "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot"
-run_niah "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot"
-run_continual "${HOPE_CONFIG}" "pilot" "${HOPE_CONT_LIST[@]}"
-run_passkey "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot"
-run_pg19 "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot"
+run_zero_shot "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot" "${HOPE_MEMORIZE_PATHS}"
+run_niah "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot" "${HOPE_MEMORIZE_PATHS}"
+run_continual "${HOPE_CONFIG}" "pilot" "${HOPE_MEMORIZE_PATHS}" "${HOPE_CONT_LIST[@]}"
+run_passkey "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot" "${HOPE_MEMORIZE_PATHS}"
+run_pg19 "${HOPE_CONFIG}" "${HOPE_CHECKPOINT}" "pilot" "${HOPE_MEMORIZE_PATHS}"
 
 if [[ -n "${TITAN_CONFIG:-}" && -n "${TITAN_CHECKPOINT:-}" ]]; then
   echo "[eval] Running suite for TITAN baseline (${TITAN_CHECKPOINT})"
-  run_zero_shot "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan"
-  run_niah "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan"
+  run_zero_shot "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan" "${TITAN_MEMORIZE_PATHS}"
+  run_niah "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan" "${TITAN_MEMORIZE_PATHS}"
   IFS=' ' read -r -a TITAN_CONT_LIST <<< "${TITAN_CHECKPOINTS:-$TITAN_CHECKPOINT}"
-  run_continual "${TITAN_CONFIG}" "titan" "${TITAN_CONT_LIST[@]}"
-  run_passkey "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan"
-  run_pg19 "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan"
+  run_continual "${TITAN_CONFIG}" "titan" "${TITAN_MEMORIZE_PATHS}" "${TITAN_CONT_LIST[@]}"
+  run_passkey "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan" "${TITAN_MEMORIZE_PATHS}"
+  run_pg19 "${TITAN_CONFIG}" "${TITAN_CHECKPOINT}" "titan" "${TITAN_MEMORIZE_PATHS}"
 else
   echo "[eval] TITAN baseline skipped (set TITAN_CONFIG and TITAN_CHECKPOINT to enable)."
 fi

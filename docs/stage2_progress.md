@@ -157,6 +157,15 @@ Documenting these steps here keeps everyone aligned while we chase full Stage 
 ### 2.13 Pilot & TITAN relaunch with surprise gating (Nov 17)
 - Relaunched the HOPE pilot job on `cuda:1` using `nohup uv run python train.py --config-name pilot train.step_offset=231000 ...` so the Muon + surprise-gated configuration produces fresh checkpoints beyond the previous 246 k ceiling. PIDs live in `logs/pilot_relaunch_surprise.pid`, streaming output in `logs/pilot_relaunch_surprise.log`, and checkpoints continue under `artifacts/checkpoints/pilot_relaunch/step_*.pt`. Once the next snapshot (e.g., step 247 k+) lands we’ll repackage the pilot release and rerun the eval suite with the updated memorize metadata.
 - Relaunched the TITAN long baseline on `cuda:0` (same surprise threshold, Muon outer) via `nohup uv run python train.py --config-name mid_titan_baseline train.step_offset=7000 train.steps=25000 ...`. Outputs/ PIDs are captured in `logs/titan_relaunch_surprise.{log,pid}` and checkpoints land in `artifacts/checkpoints/mid_titan_long/step_*.pt`. Matching eval suites (zero-shot, NIAH, continual, passkey, PG‑19) will run as soon as the 10 k/25 k checkpoints arrive.
+
+### 2.14 Packaged relaunch checkpoints + eval suite (Jan 9, 2026)
+- **HOPE pilot relaunch packaged:** `artifacts/checkpoints/pilot_relaunch/step_477000.pt` evaluated and copied into `artifacts/pilot_release/` via `scripts/package_pilot_release.sh` (now also copies sidecars + eval JSONs).
+  - Eval outputs: `eval/zeroshot_pilot.json`, `eval/niah_pilot.json`, `eval/continual_pilot.json`, `eval/passkey_pilot.json`, `eval/pg19_pilot.json`.
+  - Checkpoint report: `reports/checkpoints/pilot_relaunch_step477000.md`.
+- **TITAN long packaged:** `artifacts/checkpoints/mid_titan_long/step_032000.pt` evaluated and copied into `artifacts/pilot_release/` as `titan_step_032000.*`.
+  - Eval outputs: `eval/zeroshot_titan.json`, `eval/niah_titan.json`, `eval/continual_titan.json`, `eval/passkey_titan.json`, `eval/pg19_titan.json`.
+  - Checkpoint report: `reports/checkpoints/titan_long_step32000.md`.
+- **Note:** with `model.surprise_threshold=0.02` the memorize harness recorded 0 update events on these short eval prompts (memorization deltas are ≈0). Keep this configuration unchanged for the “surprise-gated” relaunch, but consider lowering τ only when debugging memorization deltas explicitly.
 ## 4. Release Checklist (current)
 *(Assumes only `cuda:1` is available—adjust `train.device` overrides accordingly.)*
 1. `uv sync --all-extras`

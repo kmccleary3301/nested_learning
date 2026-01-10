@@ -364,7 +364,7 @@ class HOPEModel(nn.Module):
                     fast_state=st,
                 )
 
-            if self.training and self.gradient_checkpointing:
+            if torch.is_grad_enabled() and self.training and self.gradient_checkpointing:
                 x = checkpoint(block_call, x, use_reentrant=False)
             else:
                 x = block_call(x)

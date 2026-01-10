@@ -2,6 +2,8 @@
 
 This document details Stage 2 goals: reproduce the key experimental results from Google’s Nested Learning (HOPE) paper/blog using the Stage 1 codebase. It is self-contained and assumes Stage 1 deliverables (architecture, training harness, tests, `uv` environment) are ready.
 
+**Status update (Jan 2026):** pilot relaunch and baseline checkpoints have been packaged and evaluated (HOPE `artifacts/checkpoints/pilot_relaunch/step_477000.pt`, TITAN `artifacts/checkpoints/mid_titan_long/step_032000.pt`). See `reports/checkpoints/pilot_relaunch_step477000.md`, `reports/checkpoints/titan_long_step32000.md`, and the latest eval JSONs under `eval/`.
+
 ---
 
 ## 1. Objectives

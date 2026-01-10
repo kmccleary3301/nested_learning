@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import os
+from functools import partial
 from pathlib import Path
 
 import hydra
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 from omegaconf import DictConfig
 from torch.distributed.fsdp import (
     CPUOffload,
     FullStateDictConfig,
     StateDictType,
-    state_dict_type,
 )
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
@@ -49,7 +50,14 @@ def build_fsdp_model(cfg: DictConfig, device: torch.device) -> tuple[FSDP, torch
     base_model = _maybe_compile_model(base_model, cfg.train.get("compile"))
     fsdp_cfg = cfg.train.get("fsdp", {})
     min_params = fsdp_cfg.get("auto_wrap_min_params", 2_000_000)
-    auto_wrap_policy = size_based_auto_wrap_policy(min_num_params=min_params)
+    # Avoid wrapping tied-weight modules (embed/lm_head) into separate FSDP instances.
+    # Parameter sharing across FSDP wrappers can produce shape mismatches at runtime.
+    exclude = {nn.Embedding, nn.Linear}
+    auto_wrap_policy = partial(
+        size_based_auto_wrap_policy,
+        min_num_params=min_params,
+        exclude_wrap_modules=exclude,
+    )
     cpu_offload = CPUOffload(offload_params=fsdp_cfg.get("cpu_offload", False))
     model = FSDP(
         base_model,
@@ -85,15 +93,19 @@ def save_checkpoint(
     total_steps = cfg.train.get("steps", step + 1)
     next_step = step + 1
     should_save = (next_step % save_interval == 0) or (save_last and next_step >= total_steps)
-    if not should_save or rank != 0:
+    if not should_save:
         return
     ckpt_dir = Path(ckpt_cfg.get("dir", "checkpoints/fsdp"))
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
     global_step = next_step + int(step_offset)
     ckpt_path = ckpt_dir / f"step_{global_step:06d}.pt"
+    if rank == 0:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+    dist.barrier()
     full_state_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_cfg):
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_cfg):
         model_state = model.state_dict()
+    if rank != 0:
+        return
     state = {"model": model_state, "optimizer": optimizer.state_dict(), "step": global_step}
     torch.save(state, ckpt_path)
     write_checkpoint_metadata(cfg, ckpt_path, global_step)
@@ -112,7 +124,7 @@ def maybe_resume(cfg: DictConfig, model: FSDP, optimizer: torch.optim.Optimizer,
     verify_checkpoint_integrity(Path(resume_path))
     state = torch.load(resume_path, map_location=map_location)
     full_state_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=False)
-    with state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_cfg):
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_cfg):
         model.load_state_dict(state["model"])
     optimizer.load_state_dict(state["optimizer"])
     if rank == 0:
@@ -129,7 +141,6 @@ def main(cfg: DictConfig) -> None:
     if train_seed is not None:
         _seed_everything(int(train_seed), deterministic=bool(deterministic))
     model, _ = build_fsdp_model(cfg, dist_ctx.device)
-    inner_model = unwrap_model(model)
     train_seed = cfg.train.get("seed")
     loader_seed = None if train_seed is None else int(train_seed) + dist_ctx.rank
     dataloader, sampler = build_dataloader(
@@ -167,8 +178,13 @@ def main(cfg: DictConfig) -> None:
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         with torch.no_grad():
-            teach_signal = compute_teach_signal(inner_model, logits, tokens)
-            inner_model(tokens, teach_signal=teach_signal)
+            # FSDP shards parameters at rest; compute_teach_signal needs access to the full
+            # (tied) LM head weight matrix. Summon the root parameters (embed/lm_head) to
+            # materialize the full 2D weight before computing the teach signal.
+            with FSDP.summon_full_params(model, recurse=False):
+                inner_full = unwrap_model(model)
+                teach_signal = compute_teach_signal(inner_full, logits, tokens)
+            _ = model(tokens, teach_signal=teach_signal)
         if step % log_interval == 0 and dist_ctx.rank == 0:
             ppl = torch.exp(loss.detach()).item()
             logger.log({"loss": loss.item(), "ppl": ppl}, step=step)

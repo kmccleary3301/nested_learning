@@ -1,17 +1,17 @@
 [
   {
-    "checkpoint": "artifacts/checkpoints/pilot_relaunch/step_231000.pt",
+    "checkpoint": "artifacts/checkpoints/pilot_relaunch/step_477000.pt",
     "segment_losses": {
-      "refinedweb_2018": 23.102353496514187,
-      "wikipedia_sample": 22.56078528238136,
-      "c4_sample": 22.725026564028866,
-      "redpajama_sample": 22.576520456213306
+      "refinedweb_2018": 20.093504903834393,
+      "wikipedia_sample": 19.44820931690313,
+      "c4_sample": 19.59033499342588,
+      "redpajama_sample": 19.960534548526173
     },
     "segment_baseline_losses": {
-      "refinedweb_2018": 23.102353496514187,
-      "wikipedia_sample": 22.56078528238136,
-      "c4_sample": 22.725026564028866,
-      "redpajama_sample": 22.576520456213306
+      "refinedweb_2018": 20.093504903834393,
+      "wikipedia_sample": 19.44820931690313,
+      "c4_sample": 19.59033499342588,
+      "redpajama_sample": 19.960534548526173
     },
     "segment_memorize_delta": {
       "refinedweb_2018": 0.0,
@@ -22,19 +22,51 @@
     "memorize_stats": {
       "refinedweb_2018": {
         "titan_mem_updates": 0.0,
-        "cms_fast_updates": 0.0
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
       },
       "wikipedia_sample": {
         "titan_mem_updates": 0.0,
-        "cms_fast_updates": 0.0
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
       },
       "c4_sample": {
         "titan_mem_updates": 0.0,
-        "cms_fast_updates": 0.0
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
       },
       "redpajama_sample": {
         "titan_mem_updates": 0.0,
-        "cms_fast_updates": 0.0
+        "titan_update_events": 0.0,
+        "cms_fast_updates": 0.0,
+        "cms_fast_update_events": 0.0,
+        "cms_mid_updates": 0.0,
+        "cms_mid_update_events": 0.0,
+        "cms_slow_updates": 0.0,
+        "cms_slow_update_events": 0.0,
+        "cms_ultra_updates": 0.0,
+        "cms_ultra_update_events": 0.0
       }
     }
   }

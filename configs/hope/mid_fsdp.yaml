@@ -1,5 +1,5 @@
 defaults:
-  - /hope/mid
+  - mid
   - _self_
 
 model:
