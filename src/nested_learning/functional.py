@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
 import torch
 from torch import nn
@@ -48,7 +48,7 @@ def call_with_deltas(
     return call_with_params(module, params_with_deltas(module, deltas), *args, **kwargs)
 
 
-def require_grad_params(params: ParamDict) -> ParamDict:
+def require_grad_params(params: Mapping[str, torch.Tensor]) -> ParamDict:
     return {name: value.detach().requires_grad_(True) for name, value in params.items()}
 
 
