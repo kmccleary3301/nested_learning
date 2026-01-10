@@ -29,12 +29,14 @@ class ModelConfig:
     titan_level: LevelSpec
     cms_levels: Sequence[LevelSpec]
     cms_flush_partial_at_end: bool = False
+    cms_use_layernorm: bool = True
     optimizers: Dict[str, dict] | None = None
     teach_scale: float = 1.0
     teach_clip: float = 0.0
     teach_schedule: Dict[str, float] | None = None
     gradient_checkpointing: bool = False
     surprise_threshold: float | None = None
+    surprise_metric: str = "l2"
     freeze_backbone: bool = False
     qk_l2_norm: bool = False
     local_conv_window: int | None = None
@@ -66,6 +68,7 @@ class HOPEModel(nn.Module):
         self._runtime_teach_clip = config.teach_clip
         self.gradient_checkpointing = config.gradient_checkpointing
         self._surprise_threshold = config.surprise_threshold
+        self._surprise_metric = "l2"
         self._allowed_update_levels: set[str] | None = None
         self._allowed_update_layers: set[int] | None = None
         variant = str(config.block_variant).strip().lower()
@@ -75,6 +78,7 @@ class HOPEModel(nn.Module):
                 heads=config.heads,
                 cms_levels=config.cms_levels,
                 cms_flush_partial_at_end=config.cms_flush_partial_at_end,
+                cms_use_layernorm=config.cms_use_layernorm,
                 qk_l2_norm=config.qk_l2_norm,
                 local_conv_window=config.local_conv_window,
                 self_mod_lr=config.self_mod_lr,
@@ -90,6 +94,7 @@ class HOPEModel(nn.Module):
                 titan_level=config.titan_level,
                 cms_levels=config.cms_levels,
                 cms_flush_partial_at_end=config.cms_flush_partial_at_end,
+                cms_use_layernorm=config.cms_use_layernorm,
                 qk_l2_norm=config.qk_l2_norm,
                 local_conv_window=config.local_conv_window,
                 self_mod_lr=config.self_mod_lr,
@@ -104,6 +109,7 @@ class HOPEModel(nn.Module):
                 dim=config.dim,
                 cms_levels=config.cms_levels,
                 cms_flush_partial_at_end=config.cms_flush_partial_at_end,
+                cms_use_layernorm=config.cms_use_layernorm,
                 qk_l2_norm=config.qk_l2_norm,
                 selfmod_adaptive_q=config.self_mod_adaptive_q,
                 selfmod_local_conv_window=config.self_mod_local_conv_window,
@@ -144,6 +150,7 @@ class HOPEModel(nn.Module):
         # Weight tying keeps the LM head gradient aligned with the embedding space.
         self.lm_head.weight = self.embed.weight
         self._latest_update_metrics: Dict[str, float] = {}
+        self.set_surprise_metric(config.surprise_metric)
         self.set_surprise_threshold(self._surprise_threshold)
         if config.freeze_backbone:
             self.freeze_backbone()
@@ -161,6 +168,20 @@ class HOPEModel(nn.Module):
 
     def get_surprise_threshold(self) -> float | None:
         return self._surprise_threshold
+
+    def set_surprise_metric(self, metric: str) -> None:
+        normalized = str(metric).strip().lower()
+        allowed = {"l2", "loss", "logit_entropy"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"Unsupported surprise_metric={metric!r}; expected one of {sorted(allowed)}"
+            )
+        self._surprise_metric = normalized
+        for block in self.blocks:
+            cast(_UpdateControlledBlock, block).set_surprise_metric(normalized)
+
+    def get_surprise_metric(self) -> str:
+        return self._surprise_metric
 
     def set_allowed_update_levels(self, levels: set[str] | None) -> None:
         self._allowed_update_levels = levels.copy() if levels is not None else None
@@ -195,12 +216,14 @@ class HOPEModel(nn.Module):
         teach_signal: torch.Tensor | None = None,
         teach_signals: list[torch.Tensor] | None = None,
         fast_state: ModelFastState | None = None,
+        surprise_value: float | None = None,
     ) -> torch.Tensor:
         logits, _pre_norm = self.forward_with_pre_norm(
             tokens,
             teach_signal=teach_signal,
             teach_signals=teach_signals,
             fast_state=fast_state,
+            surprise_value=surprise_value,
         )
         return logits
 
@@ -211,12 +234,14 @@ class HOPEModel(nn.Module):
         teach_signal: torch.Tensor | None = None,
         teach_signals: list[torch.Tensor] | None = None,
         fast_state: ModelFastState | None = None,
+        surprise_value: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         x = self._run_blocks(
             tokens,
             teach_signal=teach_signal,
             teach_signals=teach_signals,
             fast_state=fast_state,
+            surprise_value=surprise_value,
         )
         pre_norm = cast(torch.Tensor, x)
         x = self.norm(pre_norm)
@@ -232,12 +257,14 @@ class HOPEModel(nn.Module):
         teach_signal: torch.Tensor | None = None,
         teach_signals: list[torch.Tensor] | None = None,
         fast_state: ModelFastState | None = None,
+        surprise_value: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
         x, block_outputs = self._run_blocks(
             tokens,
             teach_signal=teach_signal,
             teach_signals=teach_signals,
             fast_state=fast_state,
+            surprise_value=surprise_value,
             collect_outputs=True,
         )
         pre_norm = x
@@ -254,13 +281,13 @@ class HOPEModel(nn.Module):
         teach_signal: torch.Tensor | None,
         fast_state: ModelFastState | None,
         teach_signals: list[torch.Tensor] | None = None,
+        surprise_value: float | None = None,
         collect_outputs: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         x = self.embed(tokens)
         block_outputs: list[torch.Tensor] = []
-        surprise_value: float | None = None
-        if teach_signal is not None:
-            surprise_value = float(teach_signal.norm(dim=-1).mean().item())
+        runtime_scale = self._runtime_teach_scale
+        runtime_clip = self._runtime_teach_clip
         if teach_signals is not None:
             if len(teach_signals) != len(self.blocks):
                 raise ValueError(
@@ -271,16 +298,38 @@ class HOPEModel(nn.Module):
                 raise ValueError("Provide either teach_signal or teach_signals, not both.")
         if fast_state is not None and len(fast_state.blocks) != len(self.blocks):
             raise ValueError("fast_state.blocks length does not match model.blocks")
+
+        require_external = self._surprise_metric in {"loss", "logit_entropy"}
+        if require_external and self._surprise_threshold is not None:
+            if (teach_signal is not None or teach_signals is not None) and surprise_value is None:
+                raise ValueError(
+                    f"surprise_metric={self._surprise_metric} requires passing surprise_value "
+                    "when model.surprise_threshold is set."
+                )
+
+        base_surprise = surprise_value
+        scaled_global_signal: torch.Tensor | None = None
+        if base_surprise is None and teach_signal is not None and self._surprise_metric == "l2":
+            scaled_global_signal = teach_signal * runtime_scale
+            if runtime_clip > 0:
+                norm = scaled_global_signal.norm(dim=-1, keepdim=True)
+                scale = torch.clamp(norm / runtime_clip, min=1.0)
+                scaled_global_signal = scaled_global_signal / scale
+            base_surprise = float(scaled_global_signal.norm(dim=-1).mean().item())
+
         for idx, block in enumerate(self.blocks):
             block_state = None if fast_state is None else fast_state.blocks[idx]
             scaled_signal = None
-            block_surprise = surprise_value
+            block_surprise = base_surprise
             if teach_signal is not None:
-                scaled_signal = teach_signal * self._runtime_teach_scale
-                if self._runtime_teach_clip > 0:
-                    norm = scaled_signal.norm(dim=-1, keepdim=True)
-                    scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
-                    scaled_signal = scaled_signal / scale
+                if scaled_global_signal is None:
+                    scaled_signal = teach_signal * runtime_scale
+                    if runtime_clip > 0:
+                        norm = scaled_signal.norm(dim=-1, keepdim=True)
+                        scale = torch.clamp(norm / runtime_clip, min=1.0)
+                        scaled_signal = scaled_signal / scale
+                else:
+                    scaled_signal = scaled_global_signal
                 if (
                     self._allowed_update_layers is not None
                     and idx not in self._allowed_update_layers
@@ -288,7 +337,8 @@ class HOPEModel(nn.Module):
                     scaled_signal = None
             if teach_signals is not None:
                 scaled_signal = teach_signals[idx] * self._runtime_teach_scale
-                block_surprise = float(scaled_signal.norm(dim=-1).mean().item())
+                if self._surprise_metric == "l2" and base_surprise is None:
+                    block_surprise = float(scaled_signal.norm(dim=-1).mean().item())
                 if self._runtime_teach_clip > 0:
                     norm = scaled_signal.norm(dim=-1, keepdim=True)
                     scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
@@ -408,5 +458,7 @@ class HOPEModel(nn.Module):
 
 class _UpdateControlledBlock(Protocol):
     def set_surprise_threshold(self, threshold: float | None) -> None: ...
+
+    def set_surprise_metric(self, metric: str) -> None: ...
 
     def set_allowed_levels(self, allowed: set[str] | None) -> None: ...

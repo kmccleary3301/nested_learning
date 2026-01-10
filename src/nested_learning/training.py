@@ -68,6 +68,12 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
     qk_l2_norm = bool(model_cfg.get("qk_l2_norm", False))
     local_conv_window_raw = model_cfg.get("local_conv_window")
     local_conv_window = None if local_conv_window_raw is None else int(local_conv_window_raw)
+    surprise_threshold_raw = model_cfg.get("surprise_threshold")
+    surprise_threshold = (
+        None if surprise_threshold_raw is None else float(surprise_threshold_raw)
+    )
+    surprise_metric = str(model_cfg.get("surprise_metric", "l2"))
+    cms_use_layernorm = bool(model_cfg.get("cms_use_layernorm", True))
     if model_type == "titan":
         titan_spec = LevelSpec(**model_cfg.titan_level)
         titan_cfg = TitanOnlyModelConfig(
@@ -82,6 +88,8 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
             teach_schedule=teach_schedule,
             qk_l2_norm=qk_l2_norm,
             local_conv_window=local_conv_window,
+            surprise_threshold=surprise_threshold,
+            surprise_metric=surprise_metric,
             freeze_backbone=model_cfg.get("freeze_backbone", False),
             self_mod_lr=float(model_cfg.get("self_mod_lr", 1e-3)),
             self_mod_hidden=int(model_cfg.get("self_mod_hidden", 4)),
@@ -105,11 +113,14 @@ def build_model_from_cfg(model_cfg: DictConfig) -> torch.nn.Module:
         titan_level=titan_spec,
         cms_levels=cms_specs,
         cms_flush_partial_at_end=bool(model_cfg.get("cms_flush_partial_at_end", False)),
+        cms_use_layernorm=cms_use_layernorm,
         optimizers=optimizer_cfg,
         teach_scale=teach_scale,
         teach_clip=teach_clip,
         teach_schedule=teach_schedule,
         gradient_checkpointing=model_cfg.get("gradient_checkpointing", False),
+        surprise_threshold=surprise_threshold,
+        surprise_metric=surprise_metric,
         freeze_backbone=model_cfg.get("freeze_backbone", False),
         qk_l2_norm=qk_l2_norm,
         local_conv_window=local_conv_window,
@@ -274,6 +285,24 @@ def _compute_layer_teach_signals(
         allow_unused=False,
     )
     return [g.detach() for g in grads]
+
+
+def _compute_surprise_override(
+    metric: str,
+    *,
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    loss: torch.Tensor,
+) -> float | None:
+    normalized = str(metric).strip().lower()
+    if normalized == "loss":
+        return float(loss.detach().item())
+    if normalized == "logit_entropy":
+        logits_detached = logits[:, :-1].detach().float()
+        probs = torch.softmax(logits_detached, dim=-1)
+        entropy = -(probs * torch.log(probs.clamp(min=1e-9))).sum(dim=-1).mean()
+        return float(entropy.item())
+    return None
 
 
 def _infer_online_chunk_size(model: HOPEModel) -> int | None:
@@ -472,6 +501,12 @@ def run_training_loop(
     step_iter = iter(dataloader)
     epoch = 0
     metrics: Dict[str, float] = {}
+    surprise_metric_getter = getattr(base_model, "get_surprise_metric", None)
+    surprise_metric = (
+        str(surprise_metric_getter()).strip().lower()
+        if callable(surprise_metric_getter)
+        else str(cfg.model.get("surprise_metric", "l2")).strip().lower()
+    )
     for step in range(steps):
         if sampler is not None and step % len(dataloader) == 0:
             sampler.set_epoch(epoch)
@@ -519,6 +554,12 @@ def run_training_loop(
                         logits[:, :-1].reshape(-1, logits.size(-1)),
                         chunk_tokens[:, 1:].reshape(-1),
                     )
+                surprise_override = _compute_surprise_override(
+                    surprise_metric,
+                    logits=logits,
+                    tokens=chunk_tokens,
+                    loss=loss,
+                )
                 if per_layer_teach:
                     teach_signals = _compute_layer_teach_signals(loss, block_outputs)
                     teach_signal_norm += float(
@@ -535,12 +576,14 @@ def run_training_loop(
                         base_model(
                             chunk_tokens,
                             teach_signals=teach_signals,
+                            surprise_value=surprise_override,
                             fast_state=fast_state,
                         )
                     else:
                         base_model(
                             chunk_tokens,
                             teach_signal=teach_signal,
+                            surprise_value=surprise_override,
                             fast_state=fast_state,
                         )
                     if hasattr(base_model, "pop_update_metrics"):
@@ -572,6 +615,12 @@ def run_training_loop(
                         logits[:, :-1].reshape(-1, logits.size(-1)),
                         tokens[:, 1:].reshape(-1),
                     )
+            surprise_override = _compute_surprise_override(
+                surprise_metric,
+                logits=logits,
+                tokens=tokens,
+                loss=loss,
+            )
             optimizer.zero_grad()
             if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
                 teach_signals = _compute_layer_teach_signals(loss, block_outputs)
@@ -583,11 +632,21 @@ def run_training_loop(
                     teach_signal_norm = float(
                         torch.stack([sig.norm(dim=-1).mean() for sig in teach_signals]).mean()
                     )
-                    base_model(tokens, teach_signals=teach_signals, fast_state=fast_state)
+                    base_model(
+                        tokens,
+                        teach_signals=teach_signals,
+                        surprise_value=surprise_override,
+                        fast_state=fast_state,
+                    )
                 else:
                     teach_signal = compute_teach_signal(base_model, logits, tokens)
                     teach_signal_norm = teach_signal.norm(dim=-1).mean().item()
-                    base_model(tokens, teach_signal=teach_signal, fast_state=fast_state)
+                    base_model(
+                        tokens,
+                        teach_signal=teach_signal,
+                        surprise_value=surprise_override,
+                        fast_state=fast_state,
+                    )
                 if hasattr(base_model, "pop_update_metrics"):
                     update_metrics = base_model.pop_update_metrics()
         if step % log_interval == 0:

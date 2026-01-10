@@ -220,7 +220,7 @@ Before tagging or announcing a new checkpoint, work through `docs/release_checkl
 - **`torch.compile`:** accelerate attention/core loops by toggling `train.compile.enable=true train.compile.mode=max-autotune`; failure falls back to eager unless `train.compile.strict=true`.
 - **Muon hybrid (default):** all HOPE configs now set `optim.type=muon`, routing ≥2D tensors through PyTorch 2.9's Muon optimizer while embeddings/norms stay on AdamW. Training logs emit `optim.muon_param_elems` / `optim.adamw_param_elems` so you can confirm the split.
 - **Fused AdamW fallback:** override with `optim.type=adamw optim.fused=auto` if Muon is unavailable or if you want to compare against the AdamW ablation in `reports/ablations.md`.
-- **Surprise gating:** set `model.surprise_threshold=<float>` to gate all inner updates on the average teach-signal norm (mirrors the paper’s “surprise” trigger). Evaluation CLIs expose `--memorize-surprise-threshold` for ad-hoc gating.
+- **Surprise gating:** set `model.surprise_threshold=<float>` to gate all inner updates. By default the surprise metric is the average L2 norm of the (scaled/clipped) teach signal (`model.surprise_metric=l2`); you can also use `loss` or `logit_entropy` for ablations. Evaluation CLIs expose `--memorize-surprise-threshold` for ad-hoc gating.
 
 All Hydra knobs can be overridden from the CLI or composed via config groups (`configs/hope/*.yaml`). Use these flags in tandem with `scripts/run_e2e_smoke.sh` (automation) or `scripts/run_cpu_ddp_smoke.sh` (CPU-only determinism check) to validate releases quickly.
 

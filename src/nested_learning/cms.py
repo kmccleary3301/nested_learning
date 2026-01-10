@@ -15,6 +15,7 @@ class CMSBlock(nn.Module):
         hidden_multiplier: int = 4,
         activation: str = "gelu",
         grad_clip: float = 1.0,
+        use_layernorm: bool = True,
     ):
         super().__init__()
         hidden = dim * hidden_multiplier
@@ -25,8 +26,9 @@ class CMSBlock(nn.Module):
             act = nn.SiLU()
         else:
             act = nn.GELU()
+        norm: nn.Module = nn.LayerNorm(dim) if use_layernorm else nn.Identity()
         self.net = nn.Sequential(
-            nn.LayerNorm(dim),
+            norm,
             nn.Linear(dim, hidden),
             act,
             nn.Linear(hidden, dim),
@@ -53,6 +55,7 @@ class CMS(nn.Module):
         levels: Sequence[LevelSpec],
         hidden_multiplier: int = 4,
         activation: str = "gelu",
+        use_layernorm: bool = True,
     ) -> None:
         super().__init__()
         ordered = ensure_level_specs(levels)
@@ -64,6 +67,7 @@ class CMS(nn.Module):
                     hidden_multiplier=hidden_multiplier,
                     activation=activation,
                     grad_clip=1.0,
+                    use_layernorm=use_layernorm,
                 )
                 for spec in self.level_specs
             }

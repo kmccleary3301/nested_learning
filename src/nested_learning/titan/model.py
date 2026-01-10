@@ -39,6 +39,7 @@ class TitanOnlyModelConfig:
     self_mod_hidden: int = 4
     self_mod_lr: float = 1e-3
     surprise_threshold: float | None = None
+    surprise_metric: str = "l2"
     freeze_backbone: bool = False
 
 
@@ -47,6 +48,7 @@ class TitanOnlyBlock(nn.Module):
         super().__init__()
         self.config = config
         self.surprise_threshold: float | None = None
+        self.surprise_metric: str = "l2"
         self.enabled: bool = True
         self.attn = SelfAttention(
             AttentionConfig(
@@ -77,6 +79,7 @@ class TitanOnlyBlock(nn.Module):
         x: torch.Tensor,
         *,
         teach_signal: torch.Tensor | None = None,
+        surprise_value: float | None = None,
         fast_state: BlockFastState | None = None,
     ) -> torch.Tensor:
         attn_out = self.attn(x)
@@ -91,9 +94,9 @@ class TitanOnlyBlock(nn.Module):
         combined = attn_out + mem_out
         if teach_signal is not None:
             if fast_state is None:
-                self._update_titan(attn_out, mem_out, teach_signal)
+                self._update_titan(attn_out, mem_out, teach_signal, surprise_value)
             else:
-                self._update_titan_fast(fast_state, attn_out, mem_out, teach_signal)
+                self._update_titan_fast(fast_state, attn_out, mem_out, teach_signal, surprise_value)
         if fast_state is None:
             self.level_manager.tick()
         else:
@@ -103,24 +106,33 @@ class TitanOnlyBlock(nn.Module):
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self.surprise_threshold = threshold
 
+    def set_surprise_metric(self, metric: str) -> None:
+        self.surprise_metric = str(metric).strip().lower()
+
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+    def _passes_surprise(self, surprise_value: float | None) -> bool:
+        if self.surprise_threshold is None:
+            return True
+        if surprise_value is None:
+            return False
+        return surprise_value >= self.surprise_threshold
 
     def _update_titan(
         self,
         attn_out: torch.Tensor,
         mem_out: torch.Tensor,
         teach_signal: torch.Tensor,
+        surprise_value: float | None,
     ) -> None:
         level_name = self.config.titan_level.name
         if not self.enabled:
             return
         if not self.level_manager.should_update(level_name):
             return
-        if self.surprise_threshold is not None:
-            surprise_value = float(teach_signal.norm())
-            if surprise_value < self.surprise_threshold:
-                return
+        if not self._passes_surprise(surprise_value):
+            return
         # Use full sequence for granular updates (Critique P1)
         # Note: We intentionally do not pool over dim=1 (sequence) here.
         modifier = self.self_modifier(
@@ -136,7 +148,7 @@ class TitanOnlyBlock(nn.Module):
             loss_terms = nn.functional.mse_loss(prediction, target, reduction="none")
             active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
             mask = active.float()
-            if self.surprise_threshold is not None:
+            if self.surprise_threshold is not None and self.surprise_metric == "l2":
                 norms = teach_signal.norm(dim=-1, keepdim=True)
                 mask = mask * (norms >= self.surprise_threshold).float()
             loss = (loss_terms * mask).sum() / mask.sum().clamp(min=1.0)
@@ -151,16 +163,15 @@ class TitanOnlyBlock(nn.Module):
         attn_out: torch.Tensor,
         mem_out: torch.Tensor,
         teach_signal: torch.Tensor,
+        surprise_value: float | None,
     ) -> None:
         level_name = self.config.titan_level.name
         if not self.enabled:
             return
         if not fast_state.level_manager.should_update(level_name):
             return
-        if self.surprise_threshold is not None:
-            surprise_value = float(teach_signal.norm())
-            if surprise_value < self.surprise_threshold:
-                return
+        if not self._passes_surprise(surprise_value):
+            return
         if fast_state.titan_params is None:
             return
         modifier = self.self_modifier(
@@ -179,7 +190,7 @@ class TitanOnlyBlock(nn.Module):
             loss_terms = nn.functional.mse_loss(prediction, target, reduction="none")
             active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
             mask = active.float()
-            if self.surprise_threshold is not None:
+            if self.surprise_threshold is not None and self.surprise_metric == "l2":
                 norms = teach_signal.norm(dim=-1, keepdim=True)
                 mask = mask * (norms >= self.surprise_threshold).float()
             loss = (loss_terms * mask).sum() / mask.sum().clamp(min=1.0)
@@ -213,7 +224,9 @@ class TitanOnlyModel(nn.Module):
         self._runtime_teach_scale = config.teach_scale
         self._runtime_teach_clip = config.teach_clip
         self._surprise_threshold: float | None = None
+        self._surprise_metric = "l2"
         self._updates_enabled: bool = True
+        self.set_surprise_metric(config.surprise_metric)
         self.set_surprise_threshold(config.surprise_threshold)
         if config.freeze_backbone:
             self.freeze_backbone()
@@ -231,6 +244,20 @@ class TitanOnlyModel(nn.Module):
 
     def get_surprise_threshold(self) -> float | None:
         return self._surprise_threshold
+
+    def set_surprise_metric(self, metric: str) -> None:
+        normalized = str(metric).strip().lower()
+        allowed = {"l2", "loss", "logit_entropy"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"Unsupported surprise_metric={metric!r}; expected one of {sorted(allowed)}"
+            )
+        self._surprise_metric = normalized
+        for block in self.blocks:
+            cast(TitanOnlyBlock, block).set_surprise_metric(normalized)
+
+    def get_surprise_metric(self) -> str:
+        return self._surprise_metric
 
     def set_allowed_update_levels(self, levels: set[str] | None) -> None:
         enabled = True
@@ -251,10 +278,19 @@ class TitanOnlyModel(nn.Module):
         *,
         teach_signal: torch.Tensor | None = None,
         fast_state: ModelFastState | None = None,
+        surprise_value: float | None = None,
     ) -> torch.Tensor:
+        require_external = self._surprise_metric in {"loss", "logit_entropy"}
+        if require_external and self._surprise_threshold is not None:
+            if teach_signal is not None and surprise_value is None:
+                raise ValueError(
+                    f"surprise_metric={self._surprise_metric} requires passing surprise_value "
+                    "when model.surprise_threshold is set."
+                )
         x = self.embed(tokens)
         if fast_state is not None and len(fast_state.blocks) != len(self.blocks):
             raise ValueError("fast_state.blocks length does not match model.blocks")
+        base_surprise = surprise_value
         for idx, block in enumerate(self.blocks):
             scaled_signal = None
             if teach_signal is not None:
@@ -264,8 +300,20 @@ class TitanOnlyModel(nn.Module):
                         norm = scaled_signal.norm(dim=-1, keepdim=True)
                         scale = torch.clamp(norm / self._runtime_teach_clip, min=1.0)
                     scaled_signal = scaled_signal / scale
+            block_surprise = base_surprise
+            if (
+                scaled_signal is not None
+                and base_surprise is None
+                and self._surprise_metric == "l2"
+            ):
+                block_surprise = float(scaled_signal.norm(dim=-1).mean().item())
             block_state = None if fast_state is None else fast_state.blocks[idx]
-            x = block(x, teach_signal=scaled_signal, fast_state=block_state)  # type: ignore[arg-type]
+            x = block(  # type: ignore[arg-type]
+                x,
+                teach_signal=scaled_signal,
+                surprise_value=block_surprise,
+                fast_state=block_state,
+            )
         x = self.norm(x)
         return self.lm_head(x)
 

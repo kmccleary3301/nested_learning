@@ -98,6 +98,7 @@ class HOPEBlockConfig:
     cms_levels: Sequence[LevelSpec]
     titan_hidden_multiplier: int = 4
     cms_hidden_multiplier: int = 4
+    cms_use_layernorm: bool = True
     activation: str = "gelu"
     qk_l2_norm: bool = False
     local_conv_window: int | None = None
@@ -115,6 +116,7 @@ class HOPEAttentionBlockConfig:
     heads: int
     cms_levels: Sequence[LevelSpec]
     cms_hidden_multiplier: int = 4
+    cms_use_layernorm: bool = True
     activation: str = "gelu"
     qk_l2_norm: bool = False
     local_conv_window: int | None = None
@@ -137,6 +139,7 @@ class HOPEAttentionBlock(nn.Module):
         self.config = config
         self.last_update_stats: Dict[str, Dict[str, float]] = {}
         self.surprise_threshold: float | None = None
+        self.surprise_metric: str = "l2"
         self.allowed_levels: Set[str] | None = None
         self.attn = SelfAttention(
             AttentionConfig(
@@ -151,6 +154,7 @@ class HOPEAttentionBlock(nn.Module):
             levels=config.cms_levels,
             hidden_multiplier=config.cms_hidden_multiplier,
             activation=config.activation,
+            use_layernorm=config.cms_use_layernorm,
         )
         level_config = LevelConfig(
             specs=config.cms_levels,
@@ -191,6 +195,9 @@ class HOPEAttentionBlock(nn.Module):
 
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self.surprise_threshold = threshold
+
+    def set_surprise_metric(self, metric: str) -> None:
+        self.surprise_metric = str(metric).strip().lower()
 
     def set_allowed_levels(self, allowed: Set[str] | None) -> None:
         self.allowed_levels = allowed.copy() if allowed is not None else None
@@ -598,6 +605,7 @@ class HOPESelfModBlockConfig:
     dim: int
     cms_levels: Sequence[LevelSpec]
     cms_hidden_multiplier: int = 4
+    cms_use_layernorm: bool = True
     activation: str = "gelu"
     qk_l2_norm: bool = True
     cms_flush_partial_at_end: bool = False
@@ -631,6 +639,7 @@ class HOPESelfModBlock(nn.Module):
         self.config = config
         self.last_update_stats: Dict[str, Dict[str, float]] = {}
         self.surprise_threshold: float | None = None
+        self.surprise_metric: str = "l2"
         self.allowed_levels: Set[str] | None = None
         self.selfmod = SelfModifyingTitans(
             SelfModifyingTitansConfig(
@@ -654,6 +663,7 @@ class HOPESelfModBlock(nn.Module):
             levels=config.cms_levels,
             hidden_multiplier=config.cms_hidden_multiplier,
             activation=config.activation,
+            use_layernorm=config.cms_use_layernorm,
         )
         level_config = LevelConfig(
             specs=config.cms_levels,
@@ -703,6 +713,9 @@ class HOPESelfModBlock(nn.Module):
 
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self.surprise_threshold = threshold
+
+    def set_surprise_metric(self, metric: str) -> None:
+        self.surprise_metric = str(metric).strip().lower()
 
     def set_allowed_levels(self, allowed: Set[str] | None) -> None:
         self.allowed_levels = allowed.copy() if allowed is not None else None
@@ -1111,6 +1124,7 @@ class HOPEBlock(nn.Module):
         self.config = config
         self.last_update_stats: Dict[str, Dict[str, float]] = {}
         self.surprise_threshold: float | None = None
+        self.surprise_metric: str = "l2"
         self.allowed_levels: Set[str] | None = None
         self.attn = SelfAttention(
             AttentionConfig(
@@ -1131,6 +1145,7 @@ class HOPEBlock(nn.Module):
             levels=config.cms_levels,
             hidden_multiplier=config.cms_hidden_multiplier,
             activation=config.activation,
+            use_layernorm=config.cms_use_layernorm,
         )
         self.self_modifier = SelfModifier(config.dim, hidden_multiplier=config.self_mod_hidden)
         self.dropout = nn.Dropout(0.0)
@@ -1185,6 +1200,9 @@ class HOPEBlock(nn.Module):
 
     def set_surprise_threshold(self, threshold: float | None) -> None:
         self.surprise_threshold = threshold
+
+    def set_surprise_metric(self, metric: str) -> None:
+        self.surprise_metric = str(metric).strip().lower()
 
     def set_allowed_levels(self, allowed: Set[str] | None) -> None:
         self.allowed_levels = allowed.copy() if allowed is not None else None
@@ -1407,7 +1425,7 @@ class HOPEBlock(nn.Module):
             loss_terms = F.mse_loss(prediction, target, reduction="none")
             active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
             mask = active.float()
-            if self.surprise_threshold is not None:
+            if self.surprise_threshold is not None and self.surprise_metric == "l2":
                 norms = teach_signal.norm(dim=-1, keepdim=True)
                 mask = mask * (norms >= self.surprise_threshold).float()
             loss = (loss_terms * mask).sum() / mask.sum().clamp(min=1.0)
@@ -1456,7 +1474,7 @@ class HOPEBlock(nn.Module):
             loss_terms = F.mse_loss(prediction, target, reduction="none")
             active = teach_signal.detach().abs().sum(dim=-1, keepdim=True) > 0
             mask = active.float()
-            if self.surprise_threshold is not None:
+            if self.surprise_threshold is not None and self.surprise_metric == "l2":
                 norms = teach_signal.norm(dim=-1, keepdim=True)
                 mask = mask * (norms >= self.surprise_threshold).float()
             loss = (loss_terms * mask).sum() / mask.sum().clamp(min=1.0)

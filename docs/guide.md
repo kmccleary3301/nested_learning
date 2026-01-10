@@ -126,7 +126,7 @@ Document disk needs (≈2 TB for 100 B tokens) before launching large jobs.
 - **`torch.compile`:** `train.compile.enable=true train.compile.mode=max-autotune` wraps HOPE blocks in TorchDynamo for faster kernels (falls back automatically if kernels fail).
 - **Muon hybrid (default):** `optim.type=muon` routes ≥2D weights through `torch.optim.Muon` (bf16-safe) while embeddings/norms stick with AdamW. Training logs print `run_features` so you can confirm the Muon vs AdamW param split at launch.
 - **Fused AdamW fallback:** to disable Muon (e.g., CPU smoke), override with `optim.type=adamw optim.fused=auto`.
-- **Surprise gating:** configure `model.surprise_threshold=<float>` to gate TITAN/CMS updates on the mean teach-signal norm; eval CLIs expose `--memorize-surprise-threshold` to reuse the same gate.
+- **Surprise gating:** configure `model.surprise_threshold=<float>` to gate TITAN/CMS updates. Default metric is mean L2 norm of the (scaled/clipped) teach signal (`model.surprise_metric=l2`); `loss` and `logit_entropy` are also supported for ablations. Eval CLIs expose `--memorize-surprise-threshold` to reuse the same gate.
 
 ---
 

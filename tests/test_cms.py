@@ -17,6 +17,19 @@ def test_cms_forward_preserves_shape() -> None:
     assert set(outputs.keys()) == {"fast", "slow"}
 
 
+def test_cms_can_disable_layernorm() -> None:
+    cms = CMS(
+        dim=16,
+        levels=[LevelSpec(name="fast", update_period=2)],
+        use_layernorm=False,
+    )
+    assert not any("net.0" in name for name, _ in cms.named_parameters())
+    x = torch.randn(2, 9, 16)
+    out = cms(x)
+    assert isinstance(out, torch.Tensor)
+    assert out.shape == x.shape
+
+
 def test_cms_updates_respect_update_period_tokens() -> None:
     cfg = HOPEAttentionBlockConfig(
         dim=16,

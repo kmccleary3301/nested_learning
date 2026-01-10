@@ -124,6 +124,48 @@ def _layernorm_backward(
     return (grad_hat - grad_mean - x_hat * grad_proj) * inv_std
 
 
+def _get_model_surprise_metric(model) -> str:
+    getter = getattr(model, "get_surprise_metric", None)
+    if callable(getter):
+        return str(getter()).strip().lower()
+    return "l2"
+
+
+def _compute_surprise_value(
+    *,
+    model,
+    metric: str,
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    teach_signal: torch.Tensor,
+) -> tuple[float, float | None]:
+    normalized = str(metric).strip().lower()
+    if normalized == "l2":
+        runtime_scale = float(getattr(model, "_runtime_teach_scale", 1.0))
+        runtime_clip = float(getattr(model, "_runtime_teach_clip", 0.0))
+        scaled = teach_signal * runtime_scale
+        if runtime_clip > 0:
+            norm = scaled.norm(dim=-1, keepdim=True)
+            scale = torch.clamp(norm / runtime_clip, min=1.0)
+            scaled = scaled / scale
+        value = float(scaled.norm(dim=-1).mean().item())
+        return value, None
+    if normalized == "loss":
+        loss = torch.nn.functional.cross_entropy(
+            logits[:, :-1].reshape(-1, logits.size(-1)),
+            tokens[:, 1:].reshape(-1),
+        )
+        value = float(loss.detach().item())
+        return value, value
+    if normalized == "logit_entropy":
+        logits_detached = logits[:, :-1].detach().float()
+        probs = torch.softmax(logits_detached, dim=-1)
+        entropy = -(probs * torch.log(probs.clamp(min=1e-9))).sum(dim=-1).mean()
+        value = float(entropy.item())
+        return value, value
+    raise ValueError(f"Unsupported surprise_metric={metric!r}")
+
+
 def memorize_tokens(
     model,
     token_batch: torch.Tensor,
@@ -239,10 +281,30 @@ def memorize_tokens(
                         raise ValueError("teach_mask batch size mismatch")
                     mask_slice = teach_mask[:, :target_end].to(masked_signal.device).float()
                     masked_signal = masked_signal * mask_slice.unsqueeze(-1)
+                surprise_metric = _get_model_surprise_metric(model)
+                surprise_value, surprise_override = _compute_surprise_value(
+                    model=model,
+                    metric=surprise_metric,
+                    logits=logits,
+                    tokens=context_tokens,
+                    teach_signal=masked_signal,
+                )
+                if cfg.surprise_threshold is not None and surprise_value < cfg.surprise_threshold:
+                    target_start = target_end
+                    continue
                 if cfg.use_fast_state:
-                    model(context_tokens, teach_signal=masked_signal, fast_state=fast_state)
+                    model(
+                        context_tokens,
+                        teach_signal=masked_signal,
+                        surprise_value=surprise_override,
+                        fast_state=fast_state,
+                    )
                 else:
-                    model(context_tokens, teach_signal=masked_signal)
+                    model(
+                        context_tokens,
+                        teach_signal=masked_signal,
+                        surprise_value=surprise_override,
+                    )
                 _collect_metrics(model, stats)
 
                 target_start = target_end
@@ -276,13 +338,25 @@ def memorize_tokens(
                         raise ValueError("teach_mask shape mismatch")
                     mask_f = teach_mask.to(teach_signal.device).float().unsqueeze(-1)
                     teach_signal = teach_signal * mask_f
-                surprise = float(torch.norm(teach_signal))
-                if cfg.surprise_threshold is not None and surprise < cfg.surprise_threshold:
+                surprise_metric = _get_model_surprise_metric(model)
+                surprise_value, surprise_override = _compute_surprise_value(
+                    model=model,
+                    metric=surprise_metric,
+                    logits=logits,
+                    tokens=token_batch,
+                    teach_signal=teach_signal,
+                )
+                if cfg.surprise_threshold is not None and surprise_value < cfg.surprise_threshold:
                     continue
                 if cfg.use_fast_state:
-                    model(token_batch, teach_signal=teach_signal, fast_state=fast_state)
+                    model(
+                        token_batch,
+                        teach_signal=teach_signal,
+                        surprise_value=surprise_override,
+                        fast_state=fast_state,
+                    )
                 else:
-                    model(token_batch, teach_signal=teach_signal)
+                    model(token_batch, teach_signal=teach_signal, surprise_value=surprise_override)
                 _collect_metrics(model, stats)
 
         _teardown_memorization_context(model, prev_allowed, prev_threshold, prev_layers)

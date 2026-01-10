@@ -63,11 +63,13 @@ This repo supports both paper‑faithful mechanisms (for auditing correctness) a
 | Online chunked training | later tokens can “see” earlier inner updates | `train.online_updates=true` (chunk size clamped to ≥2) | `src/nested_learning/training.py`, `tests/test_cms.py` |
 | CMS chunk accumulation | sum over token deltas per chunk | `cms_chunk_reduction="sum"` default | `tests/test_cms.py`, `tests/test_cms_delta_rule.py` |
 | CMS partial-chunk flush | update on final partial chunk | `model.cms_flush_partial_at_end=true` | `tests/test_cms_flush_partial.py` |
+| CMS LayerNorm | paper is architecture-light; norm is optional | `model.cms_use_layernorm=true` (default) | `tests/test_cms.py` |
 | HOPE‑SelfMod local conv | local conv window=4 (paper HOPE module) | `SelfModifyingTitansConfig.local_conv_window=4` default (causal depthwise) | `tests/test_selfmod_local_conv.py` |
 | HOPE‑SelfMod fixed q | paper: `q_t = x_t W_q` non‑adaptive | `SelfModifyingTitansConfig.adaptive_q=false` default | `tests/test_selfmod_adaptive_q.py` |
 | HOPE‑SelfMod Eq. (91) skip | no projection skip term (`w_skip`) | `model.self_mod_use_skip=false` (paper-faithful presets) | `tests/test_residual_mlp_memory.py` |
 | HOPE‑SelfMod read/write separation | differentiable read; stopgrad through writes | forward uses differentiable read; updates occur only in explicit update pass | `tests/test_selfmod_grad_flow.py`, `tests/test_hope_selfmod_update_pass.py` |
 | Fast‑state isolation | per‑context inner updates without mutating meta params, while read‑path meta init remains learnable | `train.use_fast_state=true` | CMS/TITAN use **meta+delta**; HOPE‑SelfMod read path uses straight‑through meta gradients. Meta params remain unchanged during updates and still receive outer grads (`tests/test_hope_selfmod_fast_state_meta_unchanged.py`, `tests/test_fast_state_meta_grads.py`, `tests/test_fast_state_selfmod_meta_grads.py`, `tests/test_fast_state_forward_equivalence.py`, `tests/test_fast_state_batch_semantics.py`) |
+| Surprise metric | paper “surprise” trigger | `model.surprise_metric=l2` (default); also `loss`, `logit_entropy` | `tests/test_surprise_metric.py`, `tests/test_faithfulness_harness.py` |
 | Outer optimizer | M3 option exists | `optim.type=m3` | `tests/test_m3.py` |
 | Outer param policy | include memory initial states in meta-update | `optim.param_policy=all` | `tests/test_optimizer_param_policy.py` |
 | DDP fail-fast | avoid silent paper-divergent fallbacks | `train.fail_if_paper_faithful_disabled=true` | `tests/test_distributed_fail_fast.py` |

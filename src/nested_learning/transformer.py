@@ -85,5 +85,8 @@ class TransformerBlock(nn.Module):
     def set_surprise_threshold(self, threshold: float | None) -> None:
         _ = threshold
 
+    def set_surprise_metric(self, metric: str) -> None:
+        _ = metric
+
     def set_allowed_levels(self, allowed) -> None:
         _ = allowed
