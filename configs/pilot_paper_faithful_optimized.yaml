@@ -1,0 +1,59 @@
+defaults:
+  - /pilot
+  - _self_
+
+# OPTIMIZED CONFIGURATION FOR GPU UTILIZATION
+# This config balances paper-faithful semantics with practical performance on 4090.
+# Expected throughput: ~370 tokens/s (vs ~100 tokens/s with strict paper-faithful settings)
+
+model:
+  # Paper-faithful: treat "surprise" as the (scaled) teach signal itself
+  surprise_threshold: null
+  cms_flush_partial_at_end: true
+  self_mod_adaptive_q: false
+  self_mod_local_conv_window: 4
+
+data:
+  # OPTIMIZED: Increased from 1 to 8 for better GPU utilization
+  # Note: This shares CMS/TITAN fast state across the batch (non-paper-faithful)
+  batch_size: 8
+  num_workers: 4
+
+train:
+  # OPTIMIZED: Disabled to allow batch_size > 1  
+  use_fast_state: false
+  fail_if_paper_faithful_disabled: false
+  
+  # OPTIMIZED: Log every 5 steps instead of 50 (default from pilot.yaml)
+  log_interval: 5
+  
+  # OPTIMIZED: Disabled - too slow with batched training
+  # Each chunk requires full forward+backward pass + online memory updates
+  online_updates: false
+  
+  # OPTIMIZED: Disabled - requires per-layer gradients for each token chunk
+  per_layer_teach_signal: false
+  
+  # OPTIMIZED: Disabled - .item() calls in surprise computation cause graph breaks
+  # which make torch.compile slower than eager mode
+  compile:
+    enable: false
+
+optim:
+  param_policy: all
+  # OPTIMIZED: AdamW is faster than Muon for this workload
+  type: adamw
+  lr: 2.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+
+logging:
+  run_name: pilot-paper-faithful-optimized
+  path: logs/pilot_paper_faithful_optimized_metrics.json
+
+# PERFORMANCE NOTES:
+# - Surprise computation is PRESERVED via compute_teach_signal()
+# - Memory updates (CMS/TITAN) are PRESERVED via teach signal application
+# - Main optimization: disabled online/per-layer updates, increased batch size
+# - Bottleneck: teach signal application (2nd forward pass) takes ~16s per step
+# - GPU utilization limited by sequential memory updates in architecture
