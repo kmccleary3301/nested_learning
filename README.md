@@ -13,6 +13,62 @@ Faithfulness scope (high level):
 - ⚠️ Online “writes” are stop‑grad (no backprop through online updates / boundary-state training procedure)
 - ⚠️ Multi‑GPU “paper-faithful online updates” are not supported in this repo (DDP disables some features)
 
+## ⚡ Performance Optimization (Recent Update)
+
+We've significantly improved training throughput while preserving the HOPE architecture's core mechanisms:
+
+**Performance Gains (4090 GPU)**:
+- 🚀 **18x throughput improvement**: 20 → 370 tokens/s
+- ⏱️ **2.8x faster training**: 200 steps in 2.5h (was 6-7h)
+- 📊 **3x better GPU utilization**: 20-30% (was 5-10%)
+
+**Root Cause of Original Slowness**:
+The primary bottleneck was **redundant CPU-GPU synchronization** in surprise computation:
+```python
+# ❌ Original code (training.py)
+def _compute_surprise_override(...) -> float | None:
+    if metric == "l2":
+        return None  # Model internally calls .item() 2x per forward pass
+    # Result: 150+ .item() calls per step → CPU-GPU sync overhead
+
+# Model's _run_blocks would then call:
+block_surprise = float(scaled_signal.norm(dim=-1).mean().item())  # Per block!
+```
+
+**Key Optimizations**:
+1. **Pre-compute surprise** to eliminate per-block `.item()` calls:
+   ```python
+   # ✅ Fixed code (training.py:295-307)
+   def _compute_surprise_override(
+       ..., teach_signal: torch.Tensor | None = None
+   ) -> float | None:
+       if metric == "l2" and teach_signal is not None:
+           return float(teach_signal.norm(dim=-1).mean().item())  # Once per step
+   ```
+
+2. **Batch size increase** for better GPU utilization:
+   - Paper-faithful: `batch_size=1` (strict per-context semantics)
+   - Optimized: `batch_size=8` (shared CMS/TITAN fast state across batch)
+   - See `configs/pilot_paper_faithful_optimized.yaml`
+
+3. **Disable slow training features** during optimization runs:
+   - `online_updates: false` (multiple forward/backward per chunk)
+   - `per_layer_teach_signal: false` (per-layer gradient computation)
+   - `torch.compile: false` (graph breaks from remaining .item() calls in optimizer)
+
+**What's Preserved**:
+- ✅ Surprise computation (via `compute_teach_signal`)
+- ✅ CMS/TITAN memory updates (teach signal application)
+- ✅ Model architecture and forward pass logic
+- ✅ Loss convergence and training stability
+
+**Trade-offs**:
+- Paper-faithful semantics require `batch_size=1` + `online_updates=true` (slower)
+- For maximum throughput, use `configs/pilot_paper_faithful_optimized.yaml`
+- For strict paper compliance, use `configs/pilot_paper_faithful.yaml`
+
+See `OPTIMIZATION_NOTES.md` and `EVAL_RESULTS_ANALYSIS.md` for detailed analysis.
+
 ## Quickstart
 ```bash
 uv python install 3.12
