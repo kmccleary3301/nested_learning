@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.ipynb_checkpoints/
 
 # Local artifacts
 logs/
@@ -13,10 +14,12 @@ artifacts/
 outputs/
 checkpoints/
 *.pt
+*.log
 train.log
 train_dist.log
 ref_repos/
 configs/_tmp*
+configs/test_*.yaml
 git.env
 docs/POSTS.md
 docs/EX_*.md
@@ -27,6 +30,15 @@ docs/tmp/
 docs_tmp/
 wandb/
 eval/*_ci.json
+eval/zeroshot_*_smoke*.json
+
+# Temporary test files
+test_*.py
+quick_test.py
+*_test.py
+/tmp/
+COMMIT_GUIDE.md
+QUICK_COMMIT.sh
 
 # Local paper scans / scratch references (keep tracked references separate)
 google_papers/*_arXiv_v1.pdf

@@ -295,6 +295,7 @@ def _compute_surprise_override(
     logits: torch.Tensor,
     tokens: torch.Tensor,
     loss: torch.Tensor,
+    teach_signal: torch.Tensor | None = None,
 ) -> float | None:
     normalized = str(metric).strip().lower()
     if normalized == "loss":
@@ -304,6 +305,9 @@ def _compute_surprise_override(
         probs = torch.softmax(logits_detached, dim=-1)
         entropy = -(probs * torch.log(probs.clamp(min=1e-9))).sum(dim=-1).mean()
         return float(entropy.item())
+    if normalized == "l2" and teach_signal is not None:
+        # Precompute l2 surprise to avoid repeated .item() calls in model
+        return float(teach_signal.norm(dim=-1).mean().item())
     return None
 
 
@@ -617,20 +621,27 @@ def run_training_loop(
                         logits[:, :-1].reshape(-1, logits.size(-1)),
                         tokens[:, 1:].reshape(-1),
                     )
+            # Compute teach signal BEFORE surprise override for l2 metric optimization
+            if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
+                teach_signals = _compute_layer_teach_signals(loss, block_outputs)
+                teach_signal = None
+            else:
+                teach_signal = compute_teach_signal(base_model, logits, tokens)
+                teach_signals = None
+            
             surprise_override = _compute_surprise_override(
                 surprise_metric,
                 logits=logits,
                 tokens=tokens,
                 loss=loss,
+                teach_signal=teach_signal,
             )
             optimizer.zero_grad()
-            if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
-                teach_signals = _compute_layer_teach_signals(loss, block_outputs)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(base_model.parameters(), max_norm=1.0)
             optimizer.step()
             with torch.no_grad():
-                if per_layer_teach and hasattr(base_model, "forward_with_block_outputs"):
+                if teach_signals is not None:
                     teach_signal_norm = float(
                         torch.stack([sig.norm(dim=-1).mean() for sig in teach_signals]).mean()
                     )
@@ -641,7 +652,6 @@ def run_training_loop(
                         fast_state=fast_state,
                     )
                 else:
-                    teach_signal = compute_teach_signal(base_model, logits, tokens)
                     teach_signal_norm = teach_signal.norm(dim=-1).mean().item()
                     base_model(
                         tokens,
