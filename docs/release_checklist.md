@@ -36,7 +36,7 @@ Use this list before tagging/publishing any checkpoint bundle.
 ## Distribution
 - [ ] README references any new scripts/configs
 - [ ] Issue templates / release notes updated if new features shipped
-- [ ] (Optional) Outreach draft added to `docs/POSTS.md`
+- [ ] (Optional) Outreach draft prepared in maintainer notes
 - [ ] Release manifest records algorithm mode + online flags for packaged checkpoints
 - [ ] Run `bash scripts/checks/check_git_tracked_sizes.sh` before push/tag (prevents large binaries/artifact extensions from being tracked)
 

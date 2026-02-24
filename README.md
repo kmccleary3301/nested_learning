@@ -339,7 +339,7 @@ All Hydra knobs can be overridden from the CLI or composed via config groups (`c
 - `docs/scaling_guidance.md` – roadmap for expanding data + compute footprints.
 - `docs/stage2_plan.md` – Stage 2 architecture + experiment roadmap.
 - `docs/PHASE_2_PLAN.md` – detailed Phase 2 execution plan.
-- `docs/PLAN_PROGRESS_P7.md` – progress tracker for the latest faithfulness remediation sprint.
+- `docs/stage2_progress.md` – progress tracker for the latest faithfulness remediation sprint.
 - `docs/experiments_report.md` – draft paper covering completed experiments.
 - `docs/future_directions.md` – prioritized roadmap after the initial release.
 - `reports/stage2_smoke.md` – exact commands/artifacts for the release-ready smoke workflow.
