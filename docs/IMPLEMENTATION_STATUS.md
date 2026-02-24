@@ -20,6 +20,9 @@ This table is the canonical mechanism-status map for this repo.
 | Test-time memorization path in eval harnesses | Implemented | `src/nested_learning/memorize.py`, `scripts/eval/*.py`, `tests/test_memorization.py` |
 | Compliance automation report | Implemented | `scripts/checks/compliance_report.py`, `scripts/checks/run_fidelity_ci_subset.sh`, `scripts/run_mechanism_audit_smoke.sh` |
 | Doc-to-code reference guard (anti-overclaim drift) | Implemented | `scripts/checks/verify_docs_refs.py`, `.github/workflows/ci.yml`, `tests/test_verify_docs_refs.py` |
+| Portable package/CLI entrypoints (`nl`, `python -m nested_learning`) | Implemented | `src/nested_learning/cli.py`, `src/nested_learning/__main__.py`, `tests/test_cli_tooling.py`, `pyproject.toml` |
+| Cross-platform smoke + wheel install CI gates | Implemented | `.github/workflows/ci.yml` (`cross-platform-smoke`, `wheel-install-smoke`) |
+| Package release automation (tag -> TestPyPI/PyPI) | Implemented | `.github/workflows/release.yml`, `docs/PACKAGE_RELEASE_CHECKLIST.md` |
 | Full boundary-state gradient-through-write algorithm from paper | Partially implemented (experimental) | Constrained single-process mode exists; not yet treated as production/full-scale parity (`docs/PAPER_COMPLIANCE.md`) |
 | Distributed mechanism-auditing parity for online/per-layer/boundary-cache path | Deferred | DDP strict fail-fast + documented limits (`src/nested_learning/training.py`, `scripts/run_cpu_ddp_smoke.sh`) |
 | Paper-scale training/eval reproduction | Deferred | Explicitly out of sprint scope (`docs/PAPER_COMPLIANCE.md`) |

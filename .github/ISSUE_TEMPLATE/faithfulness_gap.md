@@ -14,6 +14,15 @@ Describe the suspected deviation (cite paper section/equation).
 - Logs / screenshots / metrics
 - Steps to reproduce
 
+## Environment
+- OS:
+- Python:
+- Torch:
+- Backend (`cpu` / `cuda` / `mps` / `rocm`):
+- GPU/accelerator model (if any):
+
+If using ROCm: this project currently treats ROCm support as best-effort. Include HIP/ROCm version and exact torch build.
+
 ## Expected behavior
 What should happen according to the paper?
 

@@ -35,6 +35,9 @@ jobs:
       - name: Verify docs path references
         run: uv run python scripts/checks/verify_docs_refs.py
 
+      - name: Verify README critical commands
+        run: bash scripts/checks/check_readme_commands.sh
+
       - name: Guard tracked file sizes / artifact extensions
         run: bash scripts/checks/check_git_tracked_sizes.sh
 
@@ -43,6 +46,89 @@ jobs:
 
       - name: Pytest
         run: uv run pytest
+
+  cross-platform-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.9.8"
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: CLI help + doctor + smoke
+        run: |
+          uv run nl --help
+          uv run nl doctor --json
+          uv run nl smoke --config-name pilot_smoke --device cpu --batch-size 1 --seq-len 8
+          uv run python -m nested_learning --help
+
+  wheel-install-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.9.8"
+
+      - name: Build wheel
+        run: uv build
+
+      - name: Install wheel in isolated venv
+        run: |
+          python -m venv /tmp/wheel-smoke
+          /tmp/wheel-smoke/bin/python -m pip install --upgrade pip
+          /tmp/wheel-smoke/bin/python -m pip install dist/*.whl
+
+      - name: Verify wheel entrypoints outside repo configs
+        run: |
+          /tmp/wheel-smoke/bin/python -m nested_learning --help
+          /tmp/wheel-smoke/bin/python -m nested_learning doctor --json
+          /tmp/wheel-smoke/bin/python - <<'PY'
+          import subprocess
+          import sys
+          import tempfile
+
+          tmp = tempfile.mkdtemp(prefix="nl-wheel-smoke-")
+          cmd = [
+              sys.executable,
+              "-m",
+              "nested_learning",
+              "smoke",
+              "--config-name",
+              "pilot_smoke",
+              "--device",
+              "cpu",
+              "--batch-size",
+              "1",
+              "--seq-len",
+              "8",
+          ]
+          subprocess.run(cmd, cwd=tmp, check=True)
+          PY
 
   cpu-ddp-smoke:
     runs-on: ubuntu-latest

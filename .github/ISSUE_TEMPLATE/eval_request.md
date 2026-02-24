@@ -14,6 +14,12 @@ Why is this evaluation important for HOPE/TITAN reproduction?
 - Metric(s):
 - Expected runtime / hardware:
 
+## Environment target
+- OS:
+- Python:
+- Torch:
+- Preferred backend (`cpu` / `cuda` / `mps` / `rocm`):
+
 ## Implementation sketch
 Outline scripts/flags needed (e.g., extend `scripts/eval/zeroshot.py`).
 

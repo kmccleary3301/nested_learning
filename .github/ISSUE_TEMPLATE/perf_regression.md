@@ -16,6 +16,15 @@ Describe the regression and the baseline you’re comparing against.
 ## Repro steps
 Exact commands with overrides, plus hardware details.
 
+## Environment
+- OS:
+- Python:
+- Torch:
+- Backend (`cpu` / `cuda` / `mps` / `rocm`):
+- GPU/accelerator model (if any):
+
+If using ROCm: this project currently treats ROCm support as best-effort. Include HIP/ROCm version and exact torch build.
+
 ## Logs / artifacts
 Attach relevant logs, W&B links, or JSON eval files.
 

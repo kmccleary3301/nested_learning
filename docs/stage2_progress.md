@@ -10,6 +10,8 @@ Last updated: `2026-02-24`
 - **D-series (security/release hygiene gates):** Done
 - **E-series (paper-compliance reconciliation + reproducibility):** Done
 - **F-series (final validation + reporting):** In progress (documentation/report closure)
+- **P0-series (packaging/CLI/runtime portability foundation):** Done (`nl doctor/smoke/train/audit`, `python -m nested_learning`)
+- **P1-series (distribution/CI/release scaffolding):** Done (compat matrix, pip-first README, cross-platform smoke CI, release workflow)
 
 ## Done Criteria
 

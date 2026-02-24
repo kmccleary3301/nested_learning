@@ -1,5 +1,23 @@
 # Project TODOs
 
+## Planner Finalization – P0 Foundation
+- [x] Add first-class package CLI (`nl`) with `doctor`, `smoke`, `train`, and `audit` commands.
+- [x] Support module entrypoint (`python -m nested_learning`).
+- [x] Register CLI script in `pyproject.toml` for pip/uv installs.
+- [x] Implement runtime capability detection and JSON doctor output.
+- [x] Add cross-platform smoke tests for CLI/config composition.
+- [x] Validate with lint + mypy + full pytest.
+
+## Planner Finalization – P1 Distribution/CI
+- [x] Relax package compatibility ranges (`python>=3.10`, `torch>=2.9,<3`) while keeping lockfile golden env.
+- [x] Split optional dependencies into extras (`gpu`, `logging`, `viz`) for lighter base installs.
+- [x] Add compatibility/support-tier documentation (`docs/COMPATIBILITY_MATRIX.md`).
+- [x] Add versioning/stability policy (`docs/VERSIONING_POLICY.md`).
+- [x] Add package release checklist (`docs/PACKAGE_RELEASE_CHECKLIST.md`).
+- [x] Expand CI with cross-platform smoke and wheel-install smoke lanes.
+- [x] Add release automation workflow (`.github/workflows/release.yml`) for tag-based TestPyPI/PyPI publish.
+- [x] Update README to pip-first install + compatibility/versioning links + CLI usage.
+
 ## Stage 2 – Results Reproduction
 - [ ] **Data Engineering**
   - [ ] Acquire RefinedWeb + supplement corpora under `data/raw/`.

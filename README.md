@@ -1,6 +1,8 @@
 # Nested Learning Reproduction
 
-![Python](https://img.shields.io/badge/python-3.12+-blue)
+![CI](https://github.com/kmccleary3301/nested_learning/actions/workflows/ci.yml/badge.svg)
+![Security](https://github.com/kmccleary3301/nested_learning/actions/workflows/security.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.10%20to%203.12-blue)
 ![PyTorch](https://img.shields.io/badge/pytorch-2.9.0-red)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 ![Status](https://img.shields.io/badge/tests-smoke--ready-lightgrey)
@@ -22,7 +24,9 @@ Paper reference pin:
 ```bash
 uv python install 3.12
 uv sync --all-extras
+uv run nl doctor --json > logs/runtime_doctor.json
 uv run bash scripts/data/run_sample.sh
+uv run nl smoke --config-name pilot_smoke --device cpu
 uv run bash scripts/run_smoke.sh pilot  # CPU-friendly HOPE block smoke test
 uv run bash scripts/run_e2e_smoke.sh    # sync + sample data + smoke train + zeroshot eval
 uv run bash scripts/run_mechanism_audit_smoke.sh
@@ -34,11 +38,39 @@ uv run python scripts/eval/zeroshot.py \
 ```
 
 ## Requirements
-- Python 3.12+
-- `uv` package manager (https://github.com/astral-sh/uv)
-- PyTorch 2.9.0 LTS + CUDA-capable GPUs for accelerated runs (CPU works for smoke tests)
+- Python 3.10-3.12
+- PyTorch 2.9.x+ (golden environment in this repo uses 2.9.x)
+- `uv` (recommended for development) or `pip` for package-style usage
 
-## Setup
+## Compatibility
+- Support tiers and OS/runtime matrix: `docs/COMPATIBILITY_MATRIX.md`
+- Versioning/stability policy: `docs/VERSIONING_POLICY.md`
+- Golden repro environment: Python 3.12 + `uv lock` + PyTorch 2.9.x
+
+## Installation (pip-first)
+1. Create and activate a virtual environment.
+2. Install Torch first (CPU/CUDA wheel selection is backend-specific).
+3. Install this project.
+
+CPU example:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "torch>=2.9,<3" --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e .
+```
+
+CUDA example (adjust index URL to your CUDA runtime):
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install "torch>=2.9,<3" --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -e .
+```
+
+## Setup (uv dev workflow)
 ```bash
 uv python install 3.12
 uv sync --all-extras
@@ -50,6 +82,25 @@ Developer checks:
 - `uv run pytest`
 - `uv run bash scripts/checks/run_fidelity_ci_subset.sh`
 - `uv run python scripts/checks/compliance_report.py --config configs/pilot.yaml --output eval/compliance_report.json`
+
+## CLI
+The package ships with `nl` for portable workflows across local/dev/prod environments.
+
+```bash
+# runtime compatibility snapshot
+uv run nl doctor --json
+
+# architecture/config smoke on chosen device
+uv run nl smoke --config-name pilot_smoke --device cpu --batch-size 1 --seq-len 8
+
+# static fidelity checks for a config
+uv run nl audit --config-name pilot_paper_faithful
+
+# train with Hydra overrides
+uv run nl train --config-name pilot --override train.device=cuda:1 --override train.steps=100
+```
+
+`python -m nested_learning ...` is also supported.
 
 ## First 30 Minutes
 Use this path for a fast first success on CPU:
@@ -106,11 +157,15 @@ This confirms:
 ## Training
 - Single GPU / CPU:
   ```bash
-  uv run python train.py --config-name pilot_smoke
+  uv run nl train --config-name pilot_smoke
   ```
 - Apple Silicon (MPS, if available):
   ```bash
-  uv run python train.py --config-name pilot_smoke train.device=mps
+  uv run nl train --config-name pilot_smoke --override train.device=mps
+  ```
+- Script-based entrypoint (legacy-compatible):
+  ```bash
+  uv run python train.py --config-name pilot_smoke
   ```
 - DDP (torchrun):
   ```bash
@@ -257,7 +312,12 @@ In-context updates can run against a per-context fast state so meta parameters n
 - Training can also run update passes against a per-batch fast state via `train.use_fast_state=true` (meta+delta fast state: meta params are learnable; online updates write deltas only). If `data.batch_size>1`, CMS/TITAN fast state is shared across the batch; use `data.batch_size=1` for strict per-context semantics. See `docs/PAPER_COMPLIANCE.md`.
 
 ## Releases
-Before tagging or announcing a new checkpoint, work through `docs/release_checklist.md` so the bundle includes manifest validation reports, tokenizer coverage JSON, zero-shot/NIAH/continual/passkey/PG-19 eval outputs, forgetting plots, and filled checkpoint reports.
+Before tagging or announcing a new checkpoint, work through:
+- `docs/release_checklist.md` (model/eval artifact release bundle)
+- `docs/PACKAGE_RELEASE_CHECKLIST.md` (package/GitHub/PyPI release flow)
+- `docs/PYPI_TRUSTED_PUBLISHING.md` (one-time OIDC setup for TestPyPI/PyPI)
+
+For versioning semantics and breaking-change expectations, see `docs/VERSIONING_POLICY.md`.
 
 For reproducibility bug reports, use `docs/BUG_REPORT_CHECKLIST.md`.
 
