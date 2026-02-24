@@ -17,6 +17,7 @@ uv run python train.py --config-name pilot_paper_faithful \
   data.seq_len=9 \
   +data.dataset_size=8 \
   data.batch_size=1 \
+  data.num_workers=0 \
   logging.enabled=true \
   logging.backend=json \
   logging.path="${LOG_PATH}"
